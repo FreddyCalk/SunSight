@@ -1,0 +1,25 @@
+{
+  "name": "@sunsight/database-types",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node ./scripts/generate.mjs --write",
+    "check:drift": "node ./scripts/generate.mjs --check",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./generated": {
+      "types": "./src/database.types.ts",
+      "default": "./src/database.types.ts"
+    }
+  },
+  "types": "./src/index.ts",
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}

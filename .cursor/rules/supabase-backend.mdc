@@ -1,0 +1,115 @@
+---
+description: Supabase local-first backend — migrations, RLS, edge functions
+globs: supabase/**
+alwaysApply: false
+---
+
+# Supabase Backend
+
+Follow `.cursor/rules/requirements.mdc` for Sunsight's product contract. Paths in this rule are the intended layout once Supabase is initialized; do not claim they exist before initialization.
+
+## Local-first workflow
+
+1. Verify the installed Supabase CLI version before using a command or flag.
+2. Start and test against the local stack.
+3. Create one migration per logical schema change.
+4. Apply from an empty local database with `supabase db reset`.
+5. Regenerate TypeScript database types to the single path selected during workspace setup.
+6. Commit migration, seed changes, generated types, and relevant tests together.
+
+Never mutate production schema through the dashboard or ad-hoc SQL. Before the first shared or deployed database, an existing migration may be amended and reset locally. After migration history is shared, migrations are append-only.
+
+## Sunsight schema rules
+
+- Enable RLS on every table exposed through the API.
+- Use UUID primary keys, UTC `timestamptz`, foreign keys, checks, and indexes supporting actual query paths.
+- Store location as `geography(Point, 4326)` and add a GiST index before using `ST_DWithin`.
+- Persist coarse current location with capture time, accuracy, and expiry. Never expose another user's coordinates.
+- Keep Storage object paths in `sunset_blasts`; keep the photo bucket private.
+- Treat `blast_recipients` as an immutable dispatch snapshot once fan-out begins.
+- Store phone identifiers only as versioned server-keyed HMAC values. Never store raw contacts or plain SHA-256 phone hashes.
+- Keep device push tokens server-readable only and redact them from logs.
+- Add retention jobs for stale location, expired media, abandoned uploads, and old delivery records.
+
+Prefer Postgres enums only for stable closed sets. Do not add speculative enum values solely to avoid future migrations.
+
+## RLS and database functions
+
+- Derive identity from `auth.uid()`, never a body-supplied user ID.
+- Use `app_metadata` or dedicated role tables for authorization, never user-editable metadata.
+- Apply least-privilege grants to tables, functions, sequences, and Storage policies.
+- For `security definer` functions, set an explicit safe `search_path`, schema-qualify objects, validate authorization, and revoke default public execution.
+- UPDATE and DELETE access require the corresponding visibility needed by Postgres and the client flow.
+- Views exposed through the API must preserve caller authorization using the supported security-invoker behavior for the installed Postgres version.
+
+Recipient selection belongs in a transactional database function and must enforce verified contact match, fresh and accurate location, configured radius, blocks, mutes, active status, and recipient cap.
+
+## Edge Functions
+
+Keep each function thin: authenticate, validate, authorize, orchestrate, and return a standardized response. Shared plumbing may live under `supabase/functions/_shared/` after that structure is created.
+
+- Verify JWTs for authenticated functions.
+- Use a caller-scoped Supabase client where RLS should apply.
+- Use the service role only for a documented server-only operation, then perform explicit authorization.
+- Parse and validate all external input at the boundary with a library verified in the manifest.
+- Require a user-scoped idempotency key for blast creation and other repeatable side effects.
+- Never return stack traces, SQL details, secrets, phone data, coordinates, push tokens, or signed URLs in errors.
+- Attach an opaque request ID to logs and safe error responses.
+- Treat mobile API contracts as long-lived because older app builds remain installed. Prefer additive changes or version breaking endpoints.
+
+Recommended response shape:
+
+```json
+{
+  "data": null,
+  "error": {
+    "code": "BLAST_RATE_LIMITED",
+    "message": "Please wait before sending another sunset alert.",
+    "requestId": "req_..."
+  }
+}
+```
+
+Developer diagnostics belong in redacted server logs, not a client-visible `debug` field.
+
+## Contact matching
+
+The mobile client sends explicitly consented, normalized contact numbers to an authenticated Edge Function over TLS. The function computes a versioned HMAC using a server secret, performs matching, and discards raw values immediately.
+
+- Never log request bodies for contact matching.
+- Rate-limit and cap submitted contacts.
+- Reject malformed or unreasonably large payloads.
+- Do not expose whether an arbitrary phone number is registered.
+- Document key rotation before changing the HMAC secret or normalization algorithm.
+
+## Blast, media, and delivery
+
+- Support two blast kinds from the same pipeline: `nudge` (no media) and `photo` (private upload required before ready).
+- Authorize short-lived signed upload URLs; do not permit anonymous bucket writes.
+- Verify uploaded file type, decoded format, dimensions, and size before marking a photo blast ready.
+- Strip EXIF metadata and generate a notification-sized thumbnail plus a display derivative for the Sky Window.
+- Persist recipients before queueing notification delivery.
+- Notification copy and optional thumbnail attachment must reflect blast kind.
+- Issue signed read URLs only through a recipient-gated, expiry-checked path.
+- Dispatch through a durable queue or transactional outbox, not a long synchronous request.
+- Batch provider calls, retry transient failures with bounded backoff, record receipts, and disable terminally invalid tokens.
+- Push acceptance is not proof that the user received or opened a notification.
+
+## Seeds and configuration
+
+- Keep `supabase/config.toml` versioned after initialization.
+- Use `supabase/seed.sql` only for non-sensitive local fixtures and make it repeatable.
+- Never commit production phone numbers, coordinates, tokens, service keys, or contact data.
+- Record required secrets by name and purpose in project documentation without recording values.
+
+## Verification
+
+For every schema or function change:
+
+- reset and apply the local database from empty;
+- run database tests for RLS, distance boundaries, stale snapshots, blocks, and idempotency;
+- run Edge Function tests for auth, validation, retries, and PII redaction;
+- regenerate database types and verify no drift;
+- run Supabase database and security advisors against the target environment before release.
+
+Use commands supported by the versions installed in the repository. Do not copy a command from this guidance without checking the current CLI help or official documentation.

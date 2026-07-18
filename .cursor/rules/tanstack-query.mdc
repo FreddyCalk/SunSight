@@ -1,0 +1,86 @@
+---
+description: TanStack Query v5 patterns for Sunsight mobile server state
+globs: mobile/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# TanStack Query
+
+Apply this rule only after `@tanstack/react-query` v5 is verified in the mobile manifest and lockfile. If another major version is installed, update the rule before using its APIs.
+
+## Core Principles
+- TanStack Query owns remote server state, not camera drafts, permission state, navigation state, or form state.
+- Every query needs a stable, serializable key that includes the authenticated user scope when cached data is user-specific.
+- Clear user-scoped cache on sign-out and account switch.
+- Reads are queries; writes are mutations.
+- Define reusable v5 `queryOptions()` outside components.
+- Configure one `QueryClient` at the mobile app root.
+- Network mode and persistence choices must match the blast's idempotency and privacy requirements.
+
+## Query Key Factory Pattern
+```ts
+export const blastKeys = {
+  all: ['blasts'] as const,
+  byUser: (userId: string) => [...blastKeys.all, 'user', userId] as const,
+  detail: (userId: string, blastId: string) =>
+    [...blastKeys.byUser(userId), 'detail', blastId] as const,
+}
+```
+
+Never put raw phone numbers, contact lists, exact coordinates, push tokens, signed URLs, or image bytes in query keys.
+
+## Query options
+
+```ts
+export const blastQueryOptions = (userId: string, blastId: string) =>
+  queryOptions({
+    queryKey: blastKeys.detail(userId, blastId),
+    queryFn: () => fetchBlast(blastId),
+    staleTime: 60_000,
+  })
+```
+
+## Mutations
+
+Blast creation must use a stable user-scoped idempotency key generated when the local draft is created. A retry reuses that key.
+
+```tsx
+const mutation = useMutation({
+  mutationFn: createBlast,
+  onSuccess: (blast, variables) => {
+    queryClient.setQueryData(
+      blastKeys.detail(variables.userId, blast.id),
+      blast,
+    )
+  },
+})
+```
+
+Do not optimistically claim that a blast was accepted or dispatched. Keep local upload/draft progress in a feature state machine and replace it with authoritative server state after success.
+
+## Retry and error behavior
+
+- Retry only errors classified as transient by the typed API client.
+- Do not retry authentication, validation, permission, rate-limit-without-delay, or not-found failures blindly.
+- Honor server retry timing when supplied.
+- Mutations with side effects are retryable only when the backend contract is idempotent.
+- Render user-safe messages; send redacted diagnostics to monitoring.
+
+## Cache and persistence
+
+- Set `staleTime` per resource based on its semantics, not one arbitrary global value.
+- Location eligibility and signed media URLs should not be persisted in a long-lived cache.
+- If query persistence is added, use a verified secure storage strategy and explicitly exclude sensitive or short-lived data.
+- Remove cached private blast data when the session ends.
+- Invalidate the narrowest key affected by a mutation.
+
+## React Native lifecycle
+
+- Use the supported React Native focus and online integrations for the installed TanStack Query version.
+- Do not use web-router loaders in Expo Router.
+- Do not fetch server data in `useEffect`.
+- Test foreground resume, offline-to-online recovery, account switching, and expired sessions.
+
+## Verification
+
+Cover key factories, cache isolation between users, retry classification, idempotent mutation replay, offline recovery, and sign-out cache clearing. Verify every imported helper against the installed v5 package before implementation.

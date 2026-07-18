@@ -1,0 +1,132 @@
+---
+description: Wave-based plan format for parallel agent dispatch
+alwaysApply: true
+---
+
+# Planning — Wave Dispatch
+
+All plans MUST keep agent context under **50%** of the window. Optimize for **independent tasks** that can be issued in parallel waves.
+
+## Goal of a Plan
+
+A plan is a **dispatch schedule**, not a role roster. The reader must see at a glance:
+
+1. Which tasks can start **right now** (same wave).
+2. Which tasks must **wait** (later waves).
+3. Which **lane** each task owns so two agents never edit the same tree.
+
+## Task Sizing
+
+- One task = one verifiable outcome (single migration, single screen, single edge function, single test file).
+- If a task touches more than **3 files** or spans **2+ layers** (schema + UI + tests), split it.
+- Prefer vertical slices per feature, but **schedule** them as waves (schema → generated contracts → backend/mobile → operations), not as one mega-task.
+- Schema work that changes tables/enums **must** finish (including type regen) before any wave that imports those types.
+
+## Required Task Labels
+
+Every plan task MUST include:
+
+```
+[WAVE-N] [LANE: <lane>] [DEPS: none | WAVE-x …] <title>
+```
+
+| Label | Meaning |
+|-------|---------|
+| `WAVE-N` | Dispatch batch. All tasks in the same wave are issued together and must be independent. |
+| `LANE` | Exclusive ownership of a directory tree for that task (conflict avoidance). |
+| `DEPS` | Earlier waves that must complete first. Prefer wave refs (`WAVE-1`), not task titles. Use `none` for Wave 1. |
+
+**Do not** use `[AGENT: …]` or `[ORDER-N]` — waves replace both ordering and “who runs this.”
+
+### Lanes (pick one per task)
+
+| Lane | Owns (exclusive write) |
+|------|------------------------|
+| `root` | Root manifests, lockfile, workspace config, and root tool configuration |
+| `supabase` | `supabase/**` (migrations, RLS, seeds, edge functions, `config.toml`) |
+| `types` | The canonical generated database-types path selected during initialization |
+| `mobile` | `mobile/**` |
+| `ci` | The selected CI provider config and coverage configuration |
+| `docs` | `docs/**` and project architecture/deployment documentation |
+
+Rules:
+
+- Two tasks in the **same wave** must use **different lanes** (or disjoint file sets if both are `docs`/`ci`).
+- Never mix `supabase` schema edits with app UI in one task.
+- Do not invent shared-package or web lanes until those trees actually exist.
+
+## Waves — How to Dispatch
+
+```
+WAVE-1  →  issue all WAVE-1 tasks in parallel  →  wait for all to finish
+WAVE-2  →  issue all WAVE-2 tasks in parallel  →  wait
+…
+```
+
+### Independence rule (hard)
+
+Tasks in the **same wave** MUST:
+
+- Have no dependencies on each other.
+- Touch disjoint lanes / file sets.
+- Be completable without waiting on another in-flight task in that wave.
+
+If task B needs task A’s output, put B in a **later** wave and set `DEPS: WAVE-A`.
+
+### Default Sunsight wave ladder
+
+Use this ladder unless the feature truly skips a layer. Collapse empty waves; do not invent busywork.
+
+| Wave | Typical contents | Parallelism |
+|------|------------------|-------------|
+| **W1** | Root/mobile scaffold and independent Supabase initialization | `root` or `mobile` may run alongside `supabase` only when their files and inputs are independent. |
+| **W2** | Schema, RLS, Storage policies, database functions, seeds | Usually one `supabase` task because migration history is shared. |
+| **W3** | Generated database types and backend contracts | Run after schema; use one canonical generated-types location. |
+| **W4** | Mobile feature slices and Edge Function behavior | Separate by lane; if both need the same generated contract, both wait for W3. |
+| **W5** | CI and operational/product documentation | Run in parallel when their files are disjoint and earlier behavior is stable. |
+
+**Fan-out tip:** Keep schema history serialized, then fan out independent mobile, function, test, CI, and documentation work only when file ownership is disjoint.
+
+### Example (readable dispatch board)
+
+```text
+WAVE-1 (issue now — parallel)
+  [WAVE-1] [LANE: root] [DEPS: none] Initialize workspace manifests and lockfile
+  [WAVE-1] [LANE: supabase] [DEPS: none] Initialize the local Supabase project
+
+WAVE-2 (after WAVE-1)
+  [WAVE-2] [LANE: supabase] [DEPS: WAVE-1] Add blast, location, device, block, and delivery schema with RLS
+
+WAVE-3 (after WAVE-2)
+  [WAVE-3] [LANE: types] [DEPS: WAVE-2] Generate database types and add a drift check
+
+WAVE-4 (after WAVE-3 — parallel)
+  [WAVE-4] [LANE: mobile] [DEPS: WAVE-3] Implement capture, upload, and broadcast UI
+  [WAVE-4] [LANE: supabase] [DEPS: WAVE-3] Implement idempotent recipient selection and queued push fan-out
+
+WAVE-5 (after WAVE-4 — parallel)
+  [WAVE-5] [LANE: ci] [DEPS: WAVE-4] Add verified lint, type, test, and migration gates
+  [WAVE-5] [LANE: docs] [DEPS: WAVE-4] Document environments, secrets, retention, and notification operations
+```
+
+## Plan Structure
+
+Every plan MUST include, in order:
+
+1. **Context** (≤15 lines): goal, constraints, in-scope paths, out-of-scope.
+2. **Dispatch board**: tasks grouped by `WAVE-N`, with an explicit one-line instruction per wave (`Issue in parallel` / `Issue after WAVE-k`).
+3. **DEPS**: every task lists `none` or prior wave id(s).
+4. **Verification**: exact commands per task, verified against the repository's installed tools and scripts.
+5. **Rollback**: how to undo if a wave fails mid-way.
+
+Optional but recommended: a one-line **max parallelism** note (e.g. `W3: 3 agents, W4: 2 agents`).
+
+## Anti-patterns
+
+- ❌ Flat `[ORDER-1]…[ORDER-20]` lists that hide what can run in parallel.
+- ❌ `[AGENT: web]` as the primary label — lanes are ownership; waves are dispatch.
+- ❌ “Implement Sunsight” as one task — split schema, generated contracts, mobile behavior, delivery, and operations into dependent waves.
+- ❌ Same-wave tasks that share files or wait on each other.
+- ❌ Mobile work that imports generated schema types before those types exist.
+- ❌ Parallel tasks that both edit migration history or the same mobile feature tree.
+- ❌ Tasks with missing `DEPS` when they need an earlier wave’s output.

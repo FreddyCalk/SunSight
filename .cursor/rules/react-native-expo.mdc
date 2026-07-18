@@ -1,0 +1,89 @@
+---
+description: Sunsight React Native, Expo, and Expo Router guidance
+globs: mobile/**/*.{ts,tsx,js,json}
+alwaysApply: false
+---
+
+# Sunsight Mobile
+
+The intended application root is `mobile/`. This directory does not exist yet, so verify the generated Expo layout and installed package versions before writing package-specific APIs.
+
+## Baseline
+
+- Use TypeScript with strict checking and functional React components.
+- Use Expo Router for file-based navigation. Do not add a parallel React Navigation configuration or legacy `App.js` entry point unless the installed Expo template requires it.
+- Use Expo-supported packages compatible with the installed Expo SDK. Check the manifest, lockfile, Expo documentation, and `npx expo install --check` before adding or upgrading native dependencies.
+- Use one styling system consistently after it is selected. Do not prescribe NativeWind, Tailwind, or version pins until they are installed.
+- Keep secrets out of Expo public configuration. Values embedded in a client build are public.
+
+## Suggested structure
+
+```text
+mobile/
+  app/                 Expo Router routes and layouts
+  src/
+    components/        Reusable presentation
+    features/          Auth, capture, contacts, location, blasts, notifications
+    hooks/             Cross-feature hooks
+    lib/               Supabase, query client, logging, configuration
+    queries/           Reusable TanStack Query options if adopted
+    schemas/           Runtime boundary validation
+  assets/
+  app.config.ts
+```
+
+Route files should compose feature modules rather than contain networking, permission orchestration, or large business workflows.
+
+## Permissions and privacy
+
+- Request camera, contacts, location, photo, and notifications independently and only when needed.
+- Explain the value before the OS prompt and provide a settings recovery path after denial.
+- Never assume background location or background tasks run on schedule.
+- Treat foreground location refresh as the reliable baseline; background access is optional and requires explicit product approval.
+- Normalize contacts locally, submit them only after explicit consent, and never persist or log raw contact data.
+- Strip image EXIF metadata before sharing, with server-side verification as the final control.
+- Store session material only through the Supabase-supported secure persistence adapter for the installed client version. Use SecureStore only after verifying platform size and lifecycle constraints.
+
+## Sunsight feature boundaries
+
+- `home`: the two primary CTAs only — Look up (nudge, no camera) and Capture (camera then send).
+- `auth`: phone OTP, session recovery, account deletion.
+- `capture`: camera lifecycle, draft image, EXIF stripping, compression, upload progress, confirm-before-send.
+- `contacts`: permission state, number normalization, consented matching request.
+- `location`: permission state, accuracy, timestamp, foreground refresh, optional background adapter.
+- `blasts`: shared create flow for `nudge` and `photo`, idempotency, upload state machine, retry behavior.
+- `sky-window`: full-bleed recipient viewer for nudge and photo blasts, expiry state, deep-link entry.
+- `notifications`: token registration, token refresh, deep links into Sky Window, text-first fallback content.
+
+Do not expose recipient identities, exact recipient locations, device tokens, signed Storage paths, service-role credentials, or contact-match results beyond the minimum UI contract. The home screen must not grow extra primary actions or a feed.
+
+## Server state and offline behavior
+
+- Use TanStack Query only if v5 is installed; follow `tanstack-query.mdc`.
+- Keep local UI and draft state outside TanStack Query.
+- Persist an unsent draft until the backend confirms blast creation.
+- Model retryable and terminal errors separately.
+- Use stable user-scoped idempotency keys so a retried broadcast cannot create duplicate blasts.
+- Reconcile push-token changes at app start, sign-in, token refresh, and sign-out.
+
+## Camera, images, and notifications
+
+- Home routes Look up straight to confirm/send and Capture into the camera flow. Do not collapse them into one button.
+- Release camera and location resources when a screen loses focus.
+- Bound source image dimensions and upload size; generate thumbnails outside render paths.
+- Avoid base64 image payloads in React state, logs, API JSON, or query cache.
+- Recipients open blasts in the Sky Window via deep link. That viewer is full-bleed, single-blast, and ephemeral.
+- Rich lock-screen thumbnails are optional progressive enhancement. Text push plus Sky Window is the required MVP path.
+- Native notification extensions or config plugins require development builds and platform-specific testing; do not assume Expo Go proves production behavior.
+
+## Reliability and performance
+
+- Avoid blocking the JavaScript thread with contact normalization, image processing, or large list transforms.
+- Paginate or batch large contact work and cap backend payload size.
+- Clean up subscriptions, timers, AppState listeners, camera handles, and location watchers.
+- Handle cold-start, background, and foreground notification deep links.
+- Keep network requests out of `useEffect`; use query/mutation abstractions or explicit event handlers.
+
+## Verification
+
+For mobile changes, run the scripts defined by the actual manifest for formatting, linting, type checking, and tests. Also run Expo dependency checks and test permission denial, offline retry, upload interruption, duplicate broadcast prevention, and notification deep links on supported physical devices when those paths change.

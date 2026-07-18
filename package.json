@@ -1,0 +1,17 @@
+{
+  "name": "sunsight",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "auth:smoke": "node scripts/auth-smoke.mjs",
+    "supabase:start": "supabase start",
+    "supabase:reset": "supabase db reset",
+    "types:gen": "supabase gen types typescript --local > packages/database-types/src/database.types.ts"
+  },
+  "devDependencies": {
+    "supabase": "2.109.1"
+  }
+}

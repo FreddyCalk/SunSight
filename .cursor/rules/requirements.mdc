@@ -1,0 +1,252 @@
+---
+description: Sunsight product requirements and technical architecture
+alwaysApply: true
+---
+
+# Sunsight Technical Requirements
+
+## 1. Product goal
+
+Sunsight is a mobile-first utility that helps friends notice the same exceptional sunset in the moment. The home screen is the product: two primary actions, nothing else competing for attention.
+
+1. **Look up** — send a nearby nudge without a photo when the sky is already worth stepping outside for.
+2. **Capture** — photograph tonight's sunset, confirm, then send that image with the nudge.
+
+Both actions produce the same kind of event: a short-lived nearby blast to eligible contacts. The difference is whether the blast carries a photo.
+
+The MVP is an iOS and Android Expo application backed by Supabase. There is no web application, marketplace, admin product, payment flow, social feed, or persistent friend graph unless a later requirement adds one.
+
+## 2. Home screen contract
+
+After auth, the signed-in home screen is a single composition with exactly two primary controls:
+
+| Control | Intent | Sender flow | Blast kind |
+|---|---|---|---|
+| Look up | Alert nearby contacts that the sunset is happening now | Confirm once, then send | `nudge` |
+| Capture | Show them what you are seeing | Open camera → capture → confirm → send | `photo` |
+
+Rules for this surface:
+
+- These two controls are the only primary CTAs on home. Settings, permissions recovery, and account actions live behind secondary entry points.
+- Look up must not open the camera. Capture must not send until the sender confirms the photo.
+- Both actions share the same eligibility, cooldown, rate limits, and delivery pipeline.
+- One active outbound blast per cooldown window, regardless of kind. Switching from Look up to Capture does not bypass cooldown.
+- If camera permission is denied, Capture explains recovery and remains available later; Look up still works.
+- If notification permission is denied, the user can still send blasts but is warned they will not receive incoming ones.
+
+## 3. MVP user flow
+
+1. A new or returning user enters a `+1` US/Canada phone number in E.164 format, completes a CAPTCHA challenge, and receives a Twilio Verify SMS OTP. Entering the valid OTP creates or restores the Supabase session without a password. New users must also accept the privacy policy before onboarding is complete.
+2. The app separately requests contacts, location, camera, photo, and notification permissions when each capability is first needed.
+3. The app registers one or more push tokens and refreshes a recent coarse location when foregrounded.
+4. From home, the user chooses Look up or Capture.
+5. For Capture, the app opens the camera, the user takes one photo, reviews it, and confirms. Retake is allowed before send. Gallery import is out of scope for MVP.
+6. The backend creates one immutable blast of kind `nudge` or `photo`, stores any photo privately, and computes eligible recipients.
+7. Eligible recipients are registered contacts with a recent location inside the configured radius who have not blocked or muted the sender.
+8. Push delivery is queued and retried. Opening a notification opens the Sky Window for that blast.
+
+Permission denial must degrade gracefully. Contacts denial disables contact-based delivery; location denial disables nearby eligibility; notification denial still permits creating a blast but warns that incoming alerts will not appear.
+
+## 4. Recipient experience: the Sky Window
+
+Notified users do not land in a feed, chat thread, or media gallery. Opening a blast opens a **Sky Window**: a full-bleed, single-purpose viewer whose job is to make the recipient look up and step outside.
+
+### What the recipient sees
+
+- **Nudge blast**: full-screen atmosphere with the sender's display name, a short line such as "The sky is happening," relative time, and a quiet dismiss control. No photo.
+- **Photo blast**: the sunset image fills the screen edge to edge. Over it: sender display name, relative time, and the same quiet dismiss. No like, comment, share sheet, or recipient list.
+- Only eligible recipients can open a blast. Unauthorized or expired access shows a calm expired state, not the media.
+
+### How the photo reaches them
+
+1. Push arrives as a text alert first: `{sender} caught the sunset near you` or `{sender} says look up`. This is the reliable path on every platform.
+2. Where the platform and Expo workflow support it, attach a small private thumbnail so the lock screen can preview the sky. Thumbnail attachment is progressive enhancement, never required for MVP correctness.
+3. Tapping the notification deep-links into the Sky Window for that `blast_id`.
+4. The app asks the backend for a short-lived signed read URL only after confirming the caller is an eligible recipient and the blast has not expired.
+5. The Sky Window loads the full image from that URL, keeps it out of shared device galleries by default, and does not persist the signed URL in long-lived caches or analytics.
+
+### Ephemeral by design
+
+- A blast is visible for a short configured window after dispatch (initial default to validate: until local midnight or 4 hours, whichever comes first).
+- When the window ends, signed URLs stop resolving, the Sky Window shows expired, and storage objects become eligible for deletion.
+- There is no permanent sunset archive or social history in MVP. The point is the moment, not the scrapbook.
+
+### Why this shape
+
+- A feed would compete with the impulse to go outside.
+- MMS or public links leak media and create cost and moderation burden.
+- Lock-screen-only rich media is uneven across iOS and Android, so the Sky Window is the canonical photo surface.
+- Ephemeral access reduces the value of leaked URLs and keeps the product aligned with "look up now."
+
+## 5. Proposed technical baseline
+
+This repository is currently a scaffold. Do not claim a dependency is installed until a manifest and lockfile verify it.
+
+- Mobile: React Native with Expo, TypeScript, and Expo Router.
+- Server state: TanStack Query v5 if adopted in the mobile manifest.
+- Backend: Supabase Auth, Postgres, PostGIS, Storage, Edge Functions, and a durable delivery mechanism.
+- Authentication: passwordless phone login through a CAPTCHA-protected SMS OTP request and OTP verification. The same non-enumerating flow handles registration and login. Persist the resulting session securely so an OTP is not required on every app launch. Never trust a client-supplied phone number as identity before Supabase confirms the OTP.
+- Validation: schemas at every mobile-to-backend boundary; Zod is preferred only after installation is verified.
+- Generated database types: choose and document one canonical output path when the workspace is initialized.
+- Environments: separate local, staging, and production Supabase projects. Schema changes originate as local migrations.
+
+Exact Expo SDK, React Native, Supabase client, and notification-library versions remain open until project initialization. Use the versions selected by the current Expo SDK compatibility matrix and commit the lockfile.
+
+## 6. Architecture boundaries
+
+### Mobile application
+
+The mobile client owns the home two-button composition, camera UX, Sky Window rendering, permission prompts, contact selection/consent, foreground location refresh, local drafts, upload progress, and deep-link handling. It must not decide authorization, proximity eligibility, recipient lists, signed URL lifetime, or notification fan-out.
+
+### Supabase
+
+- Auth uses passwordless SMS OTP through Twilio Verify. Every registration/login OTP request must carry a valid, short-lived CAPTCHA token, and the account is not an authenticated identity until Supabase verifies the OTP.
+- Postgres is the system of record and PostGIS performs distance checks using `geography(Point, 4326)`.
+- A private Storage bucket holds sunset images. Public buckets are prohibited for user photos.
+- Edge Functions authenticate requests, validate inputs, create signed upload/read URLs, and orchestrate delivery.
+- Database functions perform atomic recipient selection and blast state transitions.
+- A queue or durable outbox performs push fan-out outside the request path.
+
+All externally callable database functions must use an explicit `search_path`, least privilege grants, and server-derived user identity.
+
+## 7. Contact matching and privacy
+
+Plain SHA-256 hashes of phone numbers are not acceptable. The phone-number space is enumerable, so unsalted client hashes do not meaningfully protect contacts.
+
+For the MVP:
+
+1. Validate and normalize US/Canada numbers on-device to `+1` E.164 format using a verified library and known region. Other country codes are unsupported in the MVP.
+2. Send numbers only to an authenticated Edge Function over TLS after explicit contact-access consent.
+3. Compute `HMAC-SHA-256(server_secret, e164_number)` server-side.
+4. Immediately discard raw contact numbers; do not log or persist them.
+5. Match against the HMAC of each registered, verified phone number.
+6. Rotate the HMAC key through a versioned migration strategy, not an in-place silent change.
+
+This design still exposes contact numbers transiently to Sunsight infrastructure. Document that fact in the privacy policy. Before broad release, evaluate private-set-intersection or an oblivious PRF if the threat model requires the server not to observe contacts.
+
+Do not persist a sender's full address book. If match caching is introduced, store only sender-to-user match identifiers with consent, expiration, deletion, and block-list enforcement.
+
+## 8. Location model
+
+Mobile operating systems do not guarantee an afternoon background task will run at a requested time. Background refresh is a best-effort optimization, never the only path.
+
+- Refresh location when the app is foregrounded and optionally through OS-approved background location if the user explicitly enables it.
+- Store one current coarse snapshot per user, plus `captured_at`, `accuracy_m`, and source.
+- A recipient is eligible only when the snapshot is newer than the configured TTL and accuracy is within an accepted threshold.
+- Use `ST_DWithin(location, blast_location, radius_meters)` with indexed geography columns.
+- Do not expose exact recipient coordinates to senders or other recipients.
+- Define retention and deletion jobs for stale snapshots.
+
+Initial product defaults to validate in testing: 1-mile radius, 4-hour location TTL, and coarse persisted precision. These are configuration values, not hardcoded UI constants.
+
+## 9. Proposed data model
+
+Names are provisional until the first reviewed migration.
+
+- `profiles`: user identity metadata, verified-phone HMAC/version, display name, status, timestamps.
+- `devices`: Expo/native push token, platform, app version, enabled state, last seen.
+- `location_snapshots`: user, geography point, accuracy, captured time, expiry.
+- `sunset_blasts`: sender, kind (`nudge` | `photo`), optional storage object paths (original + thumbnail), capture location/time, status, idempotency key, `expires_at`.
+- `blast_recipients`: blast, recipient, eligibility reason/version, delivery state, first-opened timestamp, timestamps.
+- `blocks`: blocker and blocked user pair.
+- `notification_preferences`: user mute and quiet-hour settings.
+- `notification_deliveries`: provider receipt, attempt count, next retry, terminal error.
+
+Constraints:
+
+- `kind = nudge` implies no photo object paths.
+- `kind = photo` requires a private original object path before the blast can leave `uploading`.
+- Clients must never read another user's contact match, device token, exact location, or recipient membership.
+
+Use UUID primary keys, UTC `timestamptz`, foreign keys, check constraints, and indexes supporting recipient lookup and retention jobs. Enable RLS on every exposed table.
+
+## 10. Blast and delivery contract
+
+Creating a blast is an idempotent state machine:
+
+- Nudge: `draft -> ready -> dispatching -> dispatched`
+- Photo: `draft -> uploading -> ready -> dispatching -> dispatched`
+
+Terminal failure states must distinguish invalid input, upload failure, and delivery failure. Reusing the same user-scoped idempotency key returns the original blast rather than creating another. Look up and Capture each mint their own idempotency key when the user commits to send.
+
+Recipient selection must occur server-side in one transaction using:
+
+- authenticated sender identity;
+- verified contact matches;
+- unexpired location snapshots;
+- configured distance and accuracy limits;
+- blocks, mute preferences, and sender/recipient active status.
+
+Persist the recipient set before dispatch so retries do not change the audience. Notification copy must reflect blast kind. Workers must batch requests, honor provider limits, retry transient failures with backoff, disable invalid device tokens, and store provider receipts without exposing tokens in logs.
+
+Rich lock-screen thumbnails require a platform feasibility spike. The Sky Window remains the canonical photo experience; text push plus in-app image is the MVP-correct path.
+
+Opening a blast requires a dedicated authorized read path that checks recipient membership and `expires_at` before issuing a signed URL.
+
+## 11. Media handling
+
+Applies only to `photo` blasts.
+
+- Validate MIME type, decoded image format, dimensions, and byte size server-side.
+- Strip EXIF metadata, especially GPS, before the image is shared.
+- Store objects under server-authorized, non-guessable paths in a private bucket.
+- Use short-lived signed upload and read URLs.
+- Generate a notification-sized thumbnail derivative for optional lock-screen preview; the Sky Window loads a display-sized derivative, not an unbounded original when a derivative exists.
+- Do not write received blasts into the device photo library unless the user explicitly saves later (out of scope for MVP).
+- Define automatic deletion for expired blasts, derivatives, and abandoned uploads.
+
+## 12. Security and abuse controls
+
+- CAPTCHA-protect every registration/login OTP request and rate-limit OTP sends and verification attempts per phone, device, and IP where practical.
+- Enforce one active broadcast per configured cooldown across both Look up and Capture, and cap recipient count.
+- Add block, report, and account deletion paths before external beta.
+- Never put service-role keys, HMAC secrets, phone numbers, contact lists, exact coordinates, or push tokens in client bundles or logs.
+- Redact PII in error monitoring. Use opaque request IDs for correlation.
+- Verify JWTs server-side and derive `auth.uid()` from the token.
+- Signed media URLs must be short-lived, recipient-gated, and useless after expiry.
+- Run Supabase database and security advisors before release.
+
+The design must include defenses against contact enumeration, replayed requests, duplicate sends, forged locations, malicious image uploads, notification spam, and stale device tokens.
+
+## 13. Reliability and offline behavior
+
+- Keep a local Capture draft until upload and blast creation are confirmed.
+- Look up may proceed without a local media draft, but still requires confirmed blast creation before treating the send as done.
+- Surface retryable and terminal errors separately.
+- Resume interrupted uploads only if the selected upload mechanism supports it; otherwise restart safely under the same idempotency key.
+- A push notification is best effort, not proof of delivery.
+- Blast creation must not wait synchronously for all provider sends.
+- Timeouts, retries, and queue depth require metrics and alerts.
+
+## 14. Testing and release gates
+
+- Unit tests: normalization, validation, state transitions, query-key factories, permission mapping, home CTA routing for Look up vs Capture.
+- Database tests: RLS, recipient selection, distance boundaries, stale snapshots, blocks, nudge-vs-photo constraints, expiry, and idempotency.
+- Edge Function tests: auth, malformed payloads, rate limits, duplicate requests, queue failures, recipient-gated signed URL issuance, and secret redaction.
+- Mobile integration tests: denied permissions, offline capture, upload retry, Look up without camera, notification deep links into Sky Window, and signed URL expiry.
+- Device tests: current supported iOS and Android versions, background behavior, text-push fallback, and optional rich-thumbnail behavior.
+- Load test recipient selection and fan-out at the expected upper cohort size.
+
+Minimum merge gates are formatting, linting, type checking, relevant tests, clean local migration reset, generated-type drift check, and no critical security-advisor findings.
+
+## 15. Observability and analytics
+
+Track request IDs across blast creation, recipient selection, queueing, and provider receipts. Measure blast creation success by kind, upload latency, eligible recipient count, dispatch latency, push acceptance, invalid-token rate, Sky Window opens, and expiry hits.
+
+Analytics must avoid raw phone numbers, contact lists, exact coordinates, private image URLs, and notification content. Product analytics require consent appropriate to the target jurisdictions.
+
+## 16. Open decisions
+
+Resolve and document these before implementation reaches the affected layer:
+
+- whether and when to expand phone support beyond the initial `+1` US/Canada E.164 contract;
+- age requirement, privacy-policy jurisdiction, and data-retention periods;
+- whether location is foreground-only or optional background access;
+- exact radius, location TTL, accuracy threshold, and shared Look-up/Capture cooldown;
+- exact blast visibility window and deletion semantics for the Sky Window;
+- final copy for Look up vs Capture notifications;
+- notification provider path and optional rich-thumbnail support in the selected Expo workflow;
+- queue/outbox implementation and operational ownership;
+- monorepo/package layout, package manager, CI provider, and deployment environments;
+- whether mutual contact membership is required or one-way sender contact membership is sufficient;
+- whether a recipient may explicitly save a photo after viewing (post-MVP candidate).

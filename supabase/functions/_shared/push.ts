@@ -1,6 +1,7 @@
 export type DeliveryResult = {
   deliveryId: string;
   state: "accepted" | "failed" | "invalid_token";
+  retry: boolean;
   receiptId?: string;
   errorCode?: string;
 };
@@ -17,17 +18,20 @@ export function classifyTicket(deliveryId: string, value: unknown): {
 } {
   const ticket = typeof value === "object" && value !== null ? value as ExpoTicket : {};
   if (ticket.status === "ok" && ticket.id) {
-    return { result: { deliveryId, state: "accepted", receiptId: ticket.id }, retry: false };
+    return {
+      result: { deliveryId, state: "accepted", retry: false, receiptId: ticket.id },
+      retry: false,
+    };
   }
   const code = ticket.details?.error ?? "EXPO_REJECTED";
   if (code === "DeviceNotRegistered") {
     return {
-      result: { deliveryId, state: "invalid_token", errorCode: code },
+      result: { deliveryId, state: "invalid_token", retry: false, errorCode: code },
       retry: false,
     };
   }
   const retry = code === "MessageRateExceeded" || code === "ExpoServerError";
-  return { result: { deliveryId, state: "failed", errorCode: code }, retry };
+  return { result: { deliveryId, state: "failed", retry, errorCode: code }, retry };
 }
 
 export function chunk<T>(values: T[], size: number): T[][] {

@@ -1,5 +1,5 @@
 import { workerRequestSchema } from "../_shared/contracts.ts";
-import { ApiError, handler, jsonResponse, parseJson } from "../_shared/http.ts";
+import { handler, jsonResponse, parseJson } from "../_shared/http.ts";
 import { chunk, classifyTicket, type DeliveryResult } from "../_shared/push.ts";
 import { adminClient, authenticateWorker, mapDatabaseError } from "../_shared/supabase.ts";
 
@@ -28,6 +28,9 @@ Deno.serve(handler(async (request, id) => {
   let accepted = 0;
   let retried = 0;
   for (const item of claimed) {
+    // Empty devices means no currently eligible enabled device. Orphaned
+    // queued deliveries (state=queued, next_attempt_at null) are reclaimable
+    // inside claim_notification_outbox and must not reach this branch.
     if (item.devices.length === 0) {
       const { error: finishError } = await admin.rpc("finish_notification_outbox", {
         p_outbox_id: item.outbox_id,
@@ -69,6 +72,7 @@ Deno.serve(handler(async (request, id) => {
         allResults.push(...devices.map((device) => ({
           deliveryId: device.deliveryId,
           state: "failed" as const,
+          retry: true,
           errorCode: "PROVIDER_UNAVAILABLE",
         })));
         continue;
@@ -79,6 +83,7 @@ Deno.serve(handler(async (request, id) => {
         allResults.push(...devices.map((device) => ({
           deliveryId: device.deliveryId,
           state: "failed" as const,
+          retry: true,
           errorCode: "PROVIDER_UNAVAILABLE",
         })));
         continue;
@@ -87,18 +92,34 @@ Deno.serve(handler(async (request, id) => {
         allResults.push(...devices.map((device) => ({
           deliveryId: device.deliveryId,
           state: "failed" as const,
+          retry: false,
           errorCode: "PROVIDER_REJECTED",
         })));
         continue;
       }
 
-      const payload = await response.json() as { data?: unknown[] };
+      let payload: { data?: unknown[] };
+      try {
+        payload = await response.json() as { data?: unknown[] };
+      } catch {
+        shouldRetry = true;
+        allResults.push(...devices.map((device) => ({
+          deliveryId: device.deliveryId,
+          state: "failed" as const,
+          retry: true,
+          errorCode: "PROVIDER_INVALID_RESPONSE",
+        })));
+        continue;
+      }
       if (!Array.isArray(payload.data) || payload.data.length !== devices.length) {
-        throw new ApiError(
-          502,
-          "PROVIDER_INVALID_RESPONSE",
-          "Notification delivery is unavailable.",
-        );
+        shouldRetry = true;
+        allResults.push(...devices.map((device) => ({
+          deliveryId: device.deliveryId,
+          state: "failed" as const,
+          retry: true,
+          errorCode: "PROVIDER_INVALID_RESPONSE",
+        })));
+        continue;
       }
       payload.data.forEach((ticket, index) => {
         const classified = classifyTicket(devices[index].deliveryId, ticket);
@@ -108,7 +129,12 @@ Deno.serve(handler(async (request, id) => {
       });
     }
 
-    if (item.attempt_count >= 5) shouldRetry = false;
+    if (item.attempt_count >= 5) {
+      shouldRetry = false;
+      allResults.forEach((result) => {
+        result.retry = false;
+      });
+    }
     const { error: finishError } = await admin.rpc("finish_notification_outbox", {
       p_outbox_id: item.outbox_id,
       p_results: allResults,

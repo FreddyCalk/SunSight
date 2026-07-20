@@ -1,0 +1,126 @@
+# Sunsight CI — minimum merge gates from .cursor/rules/requirements.mdc §14:
+# formatting/linting, type checking, unit tests, a clean local migration reset,
+# database tests, generated-type drift, and database advisors.
+#
+# Run the same gates locally (see docs/local-runbook.md and docs/deployment.md):
+#
+#   # Mobile (no Docker):
+#   npm ci --prefix mobile
+#   npm run lint --prefix mobile
+#   (cd mobile && npx tsc --noEmit -p tsconfig.json)
+#   npm test --prefix mobile
+#
+#   # Generated database types typecheck (no Docker):
+#   npm ci --prefix packages/database-types
+#   npm run typecheck --prefix packages/database-types
+#
+#   # Supabase (Docker required):
+#   npm ci
+#   cp .env.example .env
+#   npx supabase start
+#   npx supabase db reset --local
+#   npx supabase test db supabase/tests/database --local
+#   npx supabase test db supabase/tests/foundation_test.sql --local
+#   npm run check:drift --prefix packages/database-types
+#   npx supabase db advisors --local --type all --level warn --fail-on error
+#
+# The Supabase CLI version is pinned by the root package.json devDependency and
+# invoked through `npx supabase`; this workflow does not install a separate CLI.
+# Advisors are non-blocking until the first remote project exists (see the
+# `continue-on-error` step below and docs/deployment.md "CI adoption").
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # React Native 0.86 / Expo SDK 57 tooling; requirements ask for Node 22.13+.
+  NODE_VERSION: "22.13.0"
+
+jobs:
+  mobile:
+    name: Mobile lint, typecheck, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+      - name: Set up Node
+        uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install mobile dependencies
+        run: npm ci
+        working-directory: mobile
+      - name: Lint
+        run: npm run lint
+        working-directory: mobile
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.json
+        working-directory: mobile
+      - name: Unit tests
+        run: npm test
+        working-directory: mobile
+
+  database-types:
+    name: Database types typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+      - name: Set up Node
+        uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: packages/database-types/package-lock.json
+      - name: Install database-types dependencies
+        run: npm ci
+        working-directory: packages/database-types
+      - name: Typecheck generated types
+        run: npm run typecheck
+        working-directory: packages/database-types
+
+  supabase:
+    name: Supabase reset, db tests, types drift, advisors
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+      - name: Set up Node
+        uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install root tooling (pinned Supabase CLI)
+        run: npm ci
+      - name: Provide local config env for config.toml substitution
+        run: cp .env.example .env
+      - name: Start local Supabase stack
+        run: npx supabase start
+      - name: Reset local database from migrations and seed
+        run: npx supabase db reset --local
+      - name: Database tests (RLS, recipient selection, edge contracts)
+        run: npx supabase test db supabase/tests/database --local
+      - name: Database tests (foundation)
+        run: npx supabase test db supabase/tests/foundation_test.sql --local
+      - name: Generated database types drift check
+        run: npm run check:drift --prefix packages/database-types
+      - name: Database advisors (non-blocking until first remote project)
+        continue-on-error: true
+        run: npx supabase db advisors --local --type all --level warn --fail-on error
+      - name: Stop local Supabase stack
+        if: always()
+        run: npx supabase stop --no-backup

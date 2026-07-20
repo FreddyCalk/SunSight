@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path = public, extensions;
 
-select plan(27);
+select plan(29);
 
 insert into auth.users (id)
 values
@@ -87,6 +87,7 @@ select lives_ok(
     select public.create_blast(
       'nudge',
       'b0000000-0000-0000-0000-000000000001',
+      'UTC',
       statement_timestamp() + interval '3 hours'
     )
   $$,
@@ -98,6 +99,7 @@ select lives_ok(
     select public.create_blast(
       'nudge',
       'b0000000-0000-0000-0000-000000000001',
+      'UTC',
       statement_timestamp() + interval '3 hours'
     )
   $$,
@@ -120,6 +122,7 @@ select throws_ok(
     select public.create_blast(
       'photo',
       'b0000000-0000-0000-0000-000000000002',
+      'UTC',
       statement_timestamp() + interval '3 hours'
     )
   $$,
@@ -133,6 +136,7 @@ select throws_ok(
     select public.create_blast(
       'photo',
       'b0000000-0000-0000-0000-000000000003',
+      'UTC',
       statement_timestamp() - interval '1 second'
     )
   $$,
@@ -542,6 +546,55 @@ select throws_ok(
   '55000',
   null,
   'expired blasts cannot select recipients'
+);
+
+reset role;
+
+-- Clear shared cooldown so midnight-clamp create_blast cases can run.
+update public.sunset_blasts
+set created_at = statement_timestamp() - interval '2 hours'
+where sender_id = 'a0000000-0000-0000-0000-000000000001'
+  and status in ('draft', 'uploading', 'ready', 'dispatching', 'dispatched');
+
+set local role authenticated;
+select set_config(
+  'request.jwt.claim.sub',
+  'a0000000-0000-0000-0000-000000000001',
+  true
+);
+
+select throws_ok(
+  $$
+    select public.create_blast(
+      'nudge',
+      'b0000000-0000-0000-0000-0000000000aa',
+      'Not/A_Real_Zone',
+      null
+    )
+  $$,
+  '22023',
+  null,
+  'blast creation rejects an invalid IANA timezone'
+);
+
+select is(
+  (
+    select expires_at = least(
+      statement_timestamp() + interval '4 hours',
+      (
+        date_trunc('day', statement_timestamp() at time zone 'America/Denver')
+          + interval '1 day'
+      ) at time zone 'America/Denver'
+    )
+    from public.create_blast(
+      'nudge',
+      'b0000000-0000-0000-0000-0000000000ab',
+      'America/Denver',
+      statement_timestamp() + interval '4 hours'
+    )
+  ),
+  true,
+  'create_blast clamps client expiry to visibility and local midnight'
 );
 
 reset role;

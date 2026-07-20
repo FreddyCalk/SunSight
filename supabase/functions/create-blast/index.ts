@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { randomHex } from "../_shared/crypto.ts";
-import { handler, jsonResponse, parseJson } from "../_shared/http.ts";
+import { ApiError, handler, jsonResponse, parseJson } from "../_shared/http.ts";
 import { adminClient, authenticate, mapDatabaseError } from "../_shared/supabase.ts";
 
 const schema = z.object({
@@ -16,19 +16,20 @@ Deno.serve(handler(async (request, id) => {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: body.timezone });
   } catch {
-    return jsonResponse(null, 400, id);
+    throw new ApiError(400, "INVALID_REQUEST", "The request is malformed.");
   }
 
   const { data: blast, error } = await client.rpc("create_blast", {
     p_kind: body.kind,
     p_idempotency_key: body.idempotencyKey,
+    p_timezone: body.timezone,
     p_expires_at: body.expiresAt,
   });
   if (error) mapDatabaseError(error);
 
   if (body.kind === "nudge") {
     const { data: recipientCount, error: selectionError } = await client.rpc(
-      "select_and_persist_recipients",
+      "dispatch_blast",
       { p_blast_id: blast.id },
     );
     if (selectionError) mapDatabaseError(selectionError);
@@ -36,7 +37,9 @@ Deno.serve(handler(async (request, id) => {
       {
         blastId: blast.id,
         kind: blast.kind,
-        status: "dispatching",
+        status: blast.status === "dispatched" || recipientCount === 0
+          ? "dispatched"
+          : "dispatching",
         expiresAt: blast.expires_at,
         recipientCount,
       },
@@ -45,7 +48,7 @@ Deno.serve(handler(async (request, id) => {
     );
   }
 
-  if (blast.original_object_path) {
+  if (blast.status !== "uploading") {
     return jsonResponse(
       {
         blastId: blast.id,
@@ -58,13 +61,15 @@ Deno.serve(handler(async (request, id) => {
     );
   }
 
-  const extension = "jpg";
-  const path = `${user.id}/${blast.id}/original-${randomHex()}.${extension}`;
-  const { error: pathError } = await client.rpc("assign_photo_upload_path", {
-    p_blast_id: blast.id,
-    p_object_path: path,
-  });
-  if (pathError) mapDatabaseError(pathError);
+  const path = blast.original_object_path ??
+    `${user.id}/${blast.id}/original-${randomHex()}.jpg`;
+  if (!blast.original_object_path) {
+    const { error: pathError } = await client.rpc("assign_photo_upload_path", {
+      p_blast_id: blast.id,
+      p_object_path: path,
+    });
+    if (pathError) mapDatabaseError(pathError);
+  }
 
   const { data: upload, error: uploadError } = await adminClient().storage
     .from("sunset-photos")

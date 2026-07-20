@@ -14,9 +14,10 @@ As of this runbook's creation:
   `eas-cli@21.0.2` through `npx`;
 - `mobile/eas.json`, EAS project linkage, iOS bundle identifier, and Android
   package name have not been configured;
-- no Supabase migration or Edge Function files exist yet;
-- the generated database-types directory documented by the root script does
-  not exist yet.
+- Supabase migrations, database tests, and seven Edge Functions exist;
+- generated database types live under `packages/database-types`; and
+- photo completion intentionally fails closed with
+  `MEDIA_PROCESSOR_UNAVAILABLE` until a production media processor is added.
 
 The commands below describe the intended release path. They do not mean the
 current scaffold is deployable. Complete each named prerequisite before the
@@ -131,8 +132,8 @@ npx eas-cli@21.0.2 env:create \
 
 npx eas-cli@21.0.2 env:create \
   --environment preview \
-  --name EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY \
-  --value 'sb_publishable_...' \
+  --name EXPO_PUBLIC_SUPABASE_ANON_KEY \
+  --value '<staging-anon-key>' \
   --visibility plaintext
 ```
 
@@ -280,16 +281,16 @@ explicitly reviewed as safe, repeatable production reference data. The current
 
 ### 4. Provision the database Vault secret
 
-The implemented profile finalizer reads the database Vault secret named
-`PHONE_HMAC_SECRET`. Provision a distinct value in the target project's Vault
-through the Dashboard or a trusted SQL session after the migration is applied.
-Keep the value in the password manager and out of command lines, shell history,
-logs, migration files, and seed data.
+The profile finalizer reads the database Vault secret named
+`PHONE_HMAC_SECRET`, and `match-contacts` reads an Edge Function secret with the
+same name. Provision the same version 1 value in both stores for the target
+environment. Also provision a distinct `DISPATCH_WORKER_SECRET` of at least 32
+random bytes for `dispatch-notifications` and its server-side invoker.
 
-This is not an Edge Function secret. Contact-ingestion and delivery Edge
-Functions are not implemented, so they have no application-secret deployment
-step yet. Follow the versioned rotation procedure in
-[schema-operations.md](schema-operations.md) before changing an active HMAC key.
+Keep all values in the password manager and out of command lines, shell
+history, logs, migrations, seed data, and mobile configuration. Follow the
+versioned rotation procedure in [schema-operations.md](schema-operations.md)
+before changing an active HMAC key.
 
 Updated hosted secrets are available to functions without a redeploy, but a
 deployment is still required when function code changed.
@@ -306,9 +307,18 @@ npx supabase functions list \
   --project-ref "$SUPABASE_PROJECT_ID"
 ```
 
-Authenticated Sunsight functions should retain JWT verification. Do not use
-`--no-verify-jwt` as a deployment workaround. A deliberately unauthenticated
-webhook requires its own signature verification and security review.
+Authenticated Sunsight functions retain JWT verification. The implemented
+`dispatch-notifications` function is the only exception configured with
+`verify_jwt = false`; it requires `x-worker-secret` matching
+`DISPATCH_WORKER_SECRET`. Do not disable JWT verification for other functions
+as a deployment workaround.
+
+The `complete-photo-upload` Edge Function authenticates the sender but uses its
+server-side service-role client for the final `complete_photo_blast` RPC.
+Database execute permission for that RPC belongs only to `service_role`; do not
+grant it to authenticated users. Until a processor can strip metadata and
+create bounded derivatives, the Edge Function must continue to fail closed with
+`MEDIA_PROCESSOR_UNAVAILABLE` before invoking the RPC.
 
 ### 6. Run hosted checks
 
@@ -329,6 +339,13 @@ performance findings. Then verify:
 - all exposed tables have RLS and least-privilege grants;
 - the sunset media bucket is private;
 - signed media access fails for non-recipients and expired blasts;
+- blast creation requires a valid IANA timezone and server-side expiry is the
+  earliest of local midnight, configured visibility, and any shorter client
+  hint;
+- device registration rejects an Expo push token already owned by another
+  user;
+- an abandoned notification claim is reclaimable after the five-minute lock
+  TTL, including queued delivery rows with a null retry time;
 - secret, phone, coordinate, push-token, and signed-URL values do not appear in
   logs;
 - queues/outbox processing and provider receipts are healthy.
@@ -357,10 +374,12 @@ flow. Test at minimum:
   session restoration;
 - contacts, location, camera, photos, and notification permission denial;
 - Look up without opening the camera;
-- Capture review/retake before send;
+- Capture review/retake before send, with completion currently expected to
+  return `MEDIA_PROCESSOR_UNAVAILABLE`;
 - cooldown shared across Look up and Capture;
 - text push fallback and notification deep link to the Sky Window;
-- photo access by an eligible recipient;
+- nudge access by an eligible recipient; photo recipient access remains blocked
+  until the media processor is implemented;
 - unauthorized and expired Sky Window states;
 - offline capture and retry under the same idempotency key;
 - no received image written to the shared photo gallery.
@@ -435,7 +454,9 @@ make staged monitoring meaningful.
 Immediately after backend or mobile rollout:
 
 1. Run a production smoke test with designated test accounts and numbers.
-2. Confirm blast creation success for both `nudge` and `photo`.
+2. Confirm nudge creation and dispatch succeed. Confirm photo upload completion
+   fails closed with `MEDIA_PROCESSOR_UNAVAILABLE` and does not dispatch or
+   expose the original.
 3. Confirm recipient selection, queue depth, dispatch latency, push acceptance,
    invalid-token rate, Sky Window opens, and expiry behavior.
 4. Inspect Supabase Auth, Edge Function, Postgres, Twilio Verify, Expo push,

@@ -49,7 +49,8 @@ values
     '10000000-0000-0000-0000-000000000001',
     'authenticated',
     'authenticated',
-    '+12025550101',
+    -- GoTrue persists phones without '+'; keep one fixture in that shape.
+    '12025550101',
     'test-only',
     now(),
     '{}'::jsonb,

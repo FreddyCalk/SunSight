@@ -510,6 +510,12 @@ begin
     raise exception 'verified phone required' using errcode = '28000';
   end if;
 
+  -- GoTrue stores E.164 without a leading '+'. Contact matching and HMAC use
+  -- the canonical '+1…' form, so normalize before the contract check.
+  if left(verified_phone, 1) <> '+' then
+    verified_phone := '+' || verified_phone;
+  end if;
+
   if verified_phone !~ '^\+1[0-9]{10}$' then
     raise exception 'verified phone is outside the supported E.164 contract'
       using errcode = '22023';
@@ -650,7 +656,8 @@ $$;
 create or replace function public.create_blast(
   p_kind public.blast_kind,
   p_idempotency_key uuid,
-  p_expires_at timestamptz
+  p_timezone text,
+  p_expires_at timestamptz default null
 )
 returns public.sunset_blasts
 language plpgsql
@@ -666,10 +673,29 @@ declare
   sender_location public.location_snapshots;
   existing_blast public.sunset_blasts;
   result public.sunset_blasts;
+  normalized_timezone text;
+  next_local_midnight timestamptz;
+  server_expires_at timestamptz;
+  final_expires_at timestamptz;
 begin
   if caller_id is null then
     raise exception 'authentication required' using errcode = '28000';
   end if;
+
+  normalized_timezone := btrim(p_timezone);
+  if normalized_timezone is null
+    or char_length(normalized_timezone) = 0
+    or char_length(normalized_timezone) > 80
+  then
+    raise exception 'blast timezone is invalid' using errcode = '22023';
+  end if;
+
+  begin
+    perform statement_timestamp() at time zone normalized_timezone;
+  exception
+    when others then
+      raise exception 'blast timezone is invalid' using errcode = '22023';
+  end;
 
   select profiles.status
     into caller_status
@@ -695,10 +721,27 @@ begin
   visibility_seconds := private.get_config_int('blast_visibility_seconds');
   max_accuracy_m := private.get_config_int('max_location_accuracy_m');
 
-  if p_expires_at <= statement_timestamp()
-    or p_expires_at > statement_timestamp()
-      + make_interval(secs => visibility_seconds::integer)
-  then
+  next_local_midnight := (
+    date_trunc('day', statement_timestamp() at time zone normalized_timezone)
+      + interval '1 day'
+  ) at time zone normalized_timezone;
+
+  server_expires_at := least(
+    statement_timestamp() + make_interval(secs => visibility_seconds::integer),
+    next_local_midnight
+  );
+
+  if p_expires_at is null then
+    final_expires_at := server_expires_at;
+  elsif p_expires_at <= statement_timestamp() then
+    raise exception 'blast expiry is outside the accepted visibility window'
+      using errcode = '22023';
+  else
+    -- Client hint may shorten visibility; never extend past server authority.
+    final_expires_at := least(p_expires_at, server_expires_at);
+  end if;
+
+  if final_expires_at <= statement_timestamp() then
     raise exception 'blast expiry is outside the accepted visibility window'
       using errcode = '22023';
   end if;
@@ -753,7 +796,7 @@ begin
     p_idempotency_key,
     sender_location.location,
     statement_timestamp(),
-    p_expires_at
+    final_expires_at
   )
   returning * into result;
 
@@ -775,18 +818,29 @@ declare
   max_accuracy_m bigint;
   recipient_limit bigint;
   persisted_count integer;
+  jwt_role text := coalesce(
+    nullif(current_setting('request.jwt.claim.role', true), ''),
+    auth.jwt() ->> 'role'
+  );
 begin
-  if caller_id is null then
-    raise exception 'authentication required' using errcode = '28000';
-  end if;
-
   select *
     into target_blast
   from public.sunset_blasts
   where sunset_blasts.id = p_blast_id
   for update;
 
-  if target_blast.id is null or target_blast.sender_id <> caller_id then
+  if target_blast.id is null then
+    raise exception 'blast not found' using errcode = 'P0002';
+  end if;
+
+  if caller_id is null then
+    if jwt_role is distinct from 'service_role'
+      and current_user is distinct from 'service_role'
+    then
+      raise exception 'authentication required' using errcode = '28000';
+    end if;
+    caller_id := target_blast.sender_id;
+  elsif target_blast.sender_id <> caller_id then
     raise exception 'blast not found' using errcode = 'P0002';
   end if;
 
@@ -905,6 +959,7 @@ revoke all on function public.upsert_location_snapshot(
 revoke all on function public.create_blast(
   public.blast_kind,
   uuid,
+  text,
   timestamptz
 ) from public, anon;
 revoke all on function public.select_and_persist_recipients(uuid)
@@ -922,6 +977,7 @@ grant execute on function public.upsert_location_snapshot(
 grant execute on function public.create_blast(
   public.blast_kind,
   uuid,
+  text,
   timestamptz
 ) to authenticated;
 grant execute on function public.select_and_persist_recipients(uuid)

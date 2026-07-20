@@ -1,8 +1,11 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import type { Database } from '@sunsight/database-types';
 import * as SecureStore from 'expo-secure-store';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+
+export type SunsightClient = SupabaseClient<Database>;
 
 const secureStoreAdapter = {
   async getItem(key: string) {
@@ -24,7 +27,7 @@ const secureStoreAdapter = {
   },
 };
 
-function createSupabaseClient(): SupabaseClient | null {
+function createSupabaseClient(): SunsightClient | null {
   if (!supabaseUrl || !supabaseAnonKey) {
     return null;
   }
@@ -36,7 +39,7 @@ function createSupabaseClient(): SupabaseClient | null {
       return null;
     }
 
-    return createClient(supabaseUrl, supabaseAnonKey, {
+    return createClient<Database>(supabaseUrl, supabaseAnonKey, {
       auth: {
         autoRefreshToken: true,
         detectSessionInUrl: false,
@@ -50,3 +53,13 @@ function createSupabaseClient(): SupabaseClient | null {
 }
 
 export const supabase = createSupabaseClient();
+
+export function requireSupabase(): SunsightClient {
+  if (!supabase) {
+    throw new Error(
+      'Supabase is not configured. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.',
+    );
+  }
+
+  return supabase;
+}

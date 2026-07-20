@@ -49,19 +49,20 @@ Use as `EXPO_PUBLIC_SUPABASE_URL`.
 The URL is public. Its embedded project reference identifies the environment,
 so verify it before every mobile build.
 
-### Publishable API key
+### Mobile anon API key
 
-Use as `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
+The current mobile client reads the exact name
+`EXPO_PUBLIC_SUPABASE_ANON_KEY`. Use the environment's client-safe anon key.
 
 1. Open **Project Settings > API Keys**.
-2. Under **Publishable keys**, copy an existing `sb_publishable_...` key or
-   create a named publishable key for the mobile application.
+2. Copy the legacy `anon` key used by the current mobile integration.
 3. Put it in the matching EAS environment and local mobile environment.
 
-Publishable keys are intended for public clients. They do not make database
-access safe by themselves; every exposed table still requires least-privilege
-grants and Row Level Security. Prefer a publishable key over the legacy
-long-lived `anon` JWT for new configuration.
+The anon key is intended for public clients. It does not make database access
+safe by itself; every exposed table still requires least-privilege grants and
+Row Level Security. A later migration to Supabase publishable keys must update
+the mobile source and environment name together; do not set an unused
+`EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` and assume the app will read it.
 
 ### Secret API key and legacy service-role key
 
@@ -133,14 +134,16 @@ commit a connection string containing the password. Prefer the session pooler
 for general hosted clients unless a documented operation requires a direct
 connection.
 
-### Verified-phone HMAC key
+### Verified-phone and contact HMAC key
 
-The implemented database function reads one Vault secret by the exact name
-`PHONE_HMAC_SECRET`. It is a database Vault secret, not an Edge Function
-environment variable. Generate a distinct high-entropy value for every
-environment, keep the value only in the password manager, and provision it
-through the Supabase Dashboard Vault UI or a trusted SQL session using
-`vault.create_secret`.
+The implemented database profile finalizer reads a Vault secret by the exact
+name `PHONE_HMAC_SECRET`. The implemented `match-contacts` Edge Function reads
+an Edge Function environment value with the same exact name. These two stores
+must contain the same version 1 key within one environment. Generate a distinct
+high-entropy value for local, staging, and production, keep the authoritative
+value only in the password manager, provision it in Vault through the Dashboard
+or a trusted SQL session using `vault.create_secret`, and set it as an Edge
+Function secret for contact matching.
 
 Do not put the value in migrations, seed data, CLI arguments, shell history,
 logs, chat, or mobile configuration. The migration intentionally does not
@@ -152,8 +155,20 @@ deploy matching support for both HMAC versions, backfill and verify the new
 identifiers, then retire the old secret. Never overwrite
 `PHONE_HMAC_SECRET` in place while version 1 identifiers remain.
 
-Edge Function secrets for contact ingestion, media processing, or delivery are
-future work. No such Edge Functions or provider secrets are implemented yet.
+### Dispatch worker authentication
+
+`dispatch-notifications` reads `DISPATCH_WORKER_SECRET` and requires the same
+value in the `x-worker-secret` request header. Generate at least 32 random bytes
+per environment. Store it in `supabase/functions/.env.local` only for local
+development and as a Supabase Edge Function secret for staging/production.
+Keep the invoker's copy in its server-side scheduler or worker secret store.
+It is never client-safe.
+
+The Edge runtime also supplies `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and
+`SUPABASE_SERVICE_ROLE_KEY`. Function source uses the anon key for
+caller-scoped RLS requests and the service-role key only for server-authorized
+operations. Never manually expose the service-role value or copy it into mobile
+configuration.
 
 ## Twilio Verify for phone ownership
 
@@ -303,8 +318,8 @@ npx eas-cli@21.0.2 env:create \
 
 npx eas-cli@21.0.2 env:create \
   --environment preview \
-  --name EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY \
-  --value 'sb_publishable_...' \
+  --name EXPO_PUBLIC_SUPABASE_ANON_KEY \
+  --value '<staging-anon-key>' \
   --visibility plaintext
 ```
 
@@ -318,6 +333,36 @@ npx eas-cli@21.0.2 env:list --environment production
 These values are intentionally public, but they must still point to the correct
 environment. Never create an `EXPO_PUBLIC_` variable for a secret key, service
 role, database password, Twilio token, contact HMAC key, or store credential.
+
+## Environment inventory
+
+Local development uses three ignored files with separate responsibilities:
+
+- root `.env`: the three `SUPABASE_AUTH_SMS_TWILIO_*` substitutions used by
+  `supabase/config.toml`;
+- `supabase/functions/.env.local`: `PHONE_HMAC_SECRET` and
+  `DISPATCH_WORKER_SECRET`;
+- `mobile/.env.local`: `EXPO_PUBLIC_SUPABASE_URL` and
+  `EXPO_PUBLIC_SUPABASE_ANON_KEY`.
+
+For staging and production, configure each environment independently:
+
+- mobile/EAS plaintext: `EXPO_PUBLIC_SUPABASE_URL`,
+  `EXPO_PUBLIC_SUPABASE_ANON_KEY`;
+- Supabase Edge Function secrets: `PHONE_HMAC_SECRET`,
+  `DISPATCH_WORKER_SECRET`;
+- Supabase Vault: `PHONE_HMAC_SECRET`, with the same versioned value as the
+  Edge secret in that environment;
+- Supabase Auth provider settings: Twilio Account SID, Twilio Auth Token,
+  Twilio Verify Service SID, and the CAPTCHA secret;
+- EAS-managed push credentials: Apple APNs key for iOS and Firebase FCM V1
+  service-account key for Android;
+- CI/server-only stores as needed: `SUPABASE_ACCESS_TOKEN`,
+  `SUPABASE_PROJECT_ID`, `SUPABASE_DB_PASSWORD`, and `EXPO_TOKEN`.
+
+Only the two `EXPO_PUBLIC_*` mobile values and project identifiers are
+client-safe. An anon key is public configuration constrained by RLS, not an
+administrative secret. Every other credential listed above is server-only.
 
 ## Apple credentials
 

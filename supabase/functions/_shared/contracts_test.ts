@@ -1,8 +1,9 @@
-import { assert, assertEquals } from "jsr:@std/assert@1.0.14";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { matchContactsSchema, workerRequestSchema } from "./contracts.ts";
-import { errorResponse, handler } from "./http.ts";
+import { ApiError, errorResponse, handler } from "./http.ts";
+import { validateAndDerive } from "./image.ts";
 import { classifyTicket } from "./push.ts";
-import { authenticateWorker } from "./supabase.ts";
+import { authenticate, authenticateWorker } from "./supabase.ts";
 
 Deno.test("contact matching accepts canonical bounded +1 E.164 input", () => {
   const result = matchContactsSchema.safeParse({
@@ -44,11 +45,17 @@ Deno.test("safe errors do not expose sensitive exception text", async () => {
 });
 
 Deno.test("handler rejects missing user auth before operation", async () => {
-  const wrapped = handler(async () => {
-    throw new Error("must not run");
+  const wrapped = handler(async (request) => {
+    await authenticate(request);
+    throw new Error("authenticated operation must not run");
   });
-  const response = await wrapped(new Request("http://localhost", { method: "GET" }));
-  assertEquals(response.status, 405);
+  const response = await wrapped(
+    new Request("http://localhost", {
+      method: "POST",
+      body: "{}",
+    }),
+  );
+  assertEquals(response.status, 401);
 });
 
 Deno.test("worker authentication rejects absent secret", () => {
@@ -72,6 +79,7 @@ Deno.test("Expo retry and invalid-token classification is bounded", () => {
       result: {
         deliveryId: "00000000-0000-0000-0000-000000000001",
         state: "invalid_token",
+        retry: false,
         errorCode: "DeviceNotRegistered",
       },
       retry: false,
@@ -82,5 +90,17 @@ Deno.test("Expo retry and invalid-token classification is bounded", () => {
       status: "error",
       details: { error: "MessageRateExceeded" },
     }).retry,
+  );
+});
+
+Deno.test("image adapter fails closed without a safe processor", async () => {
+  const png = new Uint8Array(32);
+  png.set([137, 80, 78, 71, 13, 10, 26, 10]);
+  new DataView(png.buffer).setUint32(16, 320);
+  new DataView(png.buffer).setUint32(20, 320);
+  await assertRejects(
+    () => validateAndDerive(new Blob([png.buffer], { type: "image/png" })),
+    ApiError,
+    "Photo processing is temporarily unavailable.",
   );
 });

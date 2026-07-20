@@ -510,11 +510,37 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      assign_photo_upload_path: {
+        Args: { p_blast_id: string; p_object_path: string }
+        Returns: undefined
+      }
+      claim_notification_outbox: {
+        Args: { p_limit: number }
+        Returns: {
+          attempt_count: number
+          blast_id: string
+          devices: Json
+          kind: Database["public"]["Enums"]["blast_kind"]
+          outbox_id: string
+          recipient_id: string
+          sender_display_name: string
+        }[]
+      }
+      complete_photo_blast: {
+        Args: {
+          p_blast_id: string
+          p_display_path: string
+          p_original_path: string
+          p_thumbnail_path: string
+        }
+        Returns: number
+      }
       create_blast: {
         Args: {
-          p_expires_at: string
+          p_expires_at?: string
           p_idempotency_key: string
           p_kind: Database["public"]["Enums"]["blast_kind"]
+          p_timezone: string
         }
         Returns: {
           audience_selected_at: string | null
@@ -541,8 +567,45 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      dispatch_blast: { Args: { p_blast_id: string }; Returns: number }
       finalize_verified_profile: {
         Args: { p_privacy_policy_version: string }
+        Returns: undefined
+      }
+      finish_notification_outbox: {
+        Args: {
+          p_error_code?: string
+          p_outbox_id: string
+          p_results: Json
+          p_retry: boolean
+        }
+        Returns: undefined
+      }
+      get_blast_access: {
+        Args: { p_blast_id: string }
+        Returns: {
+          blast_id: string
+          created_at: string
+          display_object_path: string
+          expires_at: string
+          kind: Database["public"]["Enums"]["blast_kind"]
+          sender_display_name: string
+        }[]
+      }
+      register_device: {
+        Args: {
+          p_app_version?: string
+          p_platform: Database["public"]["Enums"]["device_platform"]
+          p_push_token: string
+        }
+        Returns: string
+      }
+      replace_contact_matches: {
+        Args: {
+          p_consented_at: string
+          p_contact_hmac_hex: string[]
+          p_hmac_version: number
+        }
         Returns: undefined
       }
       select_and_persist_recipients: {

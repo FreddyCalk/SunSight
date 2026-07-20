@@ -33,7 +33,28 @@
           "imageWidth": 76
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Sunsight uses your location while the app is open to find nearby sunset alerts from people you know."
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Sunsight uses your contacts to find people nearby who already use the app."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Sunsight uses the camera when you choose Capture to photograph tonight's sunset.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true,

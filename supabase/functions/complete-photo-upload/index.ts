@@ -14,6 +14,25 @@ Deno.serve(handler(async (request, id) => {
     throw new ApiError(404, "PHOTO_NOT_FOUND", "The uploaded photo was not found.");
   }
 
+  const { data: blast, error: blastError } = await client
+    .from("sunset_blasts")
+    .select("status,original_object_path")
+    .eq("id", body.blastId)
+    .maybeSingle();
+  if (
+    blastError ||
+    !blast ||
+    blast.original_object_path !== body.originalPath
+  ) {
+    throw new ApiError(404, "PHOTO_NOT_FOUND", "The uploaded photo was not found.");
+  }
+  if (blast.status === "dispatching" || blast.status === "dispatched") {
+    return jsonResponse({ blastId: body.blastId, status: blast.status }, 200, id);
+  }
+  if (blast.status !== "uploading") {
+    throw new ApiError(409, "PHOTO_NOT_COMPLETABLE", "The uploaded photo cannot be completed.");
+  }
+
   const admin = adminClient();
   const { data: original, error: downloadError } = await admin.storage
     .from("sunset-photos")
@@ -41,7 +60,7 @@ Deno.serve(handler(async (request, id) => {
     mapDatabaseError(displayUpload.error ?? thumbnailUpload.error!);
   }
 
-  const { data: recipientCount, error } = await client.rpc("complete_photo_blast", {
+  const { data: recipientCount, error } = await admin.rpc("complete_photo_blast", {
     p_blast_id: body.blastId,
     p_original_path: body.originalPath,
     p_display_path: displayPath,
@@ -55,7 +74,7 @@ Deno.serve(handler(async (request, id) => {
   return jsonResponse(
     {
       blastId: body.blastId,
-      status: "dispatching",
+      status: recipientCount === 0 ? "dispatched" : "dispatching",
       recipientCount,
     },
     200,

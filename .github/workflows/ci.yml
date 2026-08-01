@@ -45,7 +45,7 @@ concurrency:
 
 env:
   # React Native 0.86 / Expo SDK 57 tooling; requirements ask for Node 22.13+.
-  NODE_VERSION: "22.13.0"
+  NODE_VERSION: "24.18.1"
 
 jobs:
   mobile:

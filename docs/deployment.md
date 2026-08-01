@@ -1,8 +1,10 @@
 # Deployment runbook
 
-This runbook covers the Supabase backend and Expo mobile application. Deploy to
-staging first, complete the release checks, then repeat with production
-credentials. Do not use a production project as a staging target.
+This runbook covers the Supabase backend and Expo mobile application. Staging
+auto-deploys from the `preview` branch; production mobile ships only from a
+`vX.Y.Z` tag via `deploy-to-production`. Deploy to staging first, complete the
+release checks, then promote. Do not use a production project as a staging
+target. See [Branch model and release flow](#branch-model-and-release-flow).
 
 ## Current repository readiness
 
@@ -363,7 +365,91 @@ performance findings. Then verify:
 
 Do not proceed to the mobile production build if backend verification fails.
 
+## Branch model and release flow
+
+Sunsight uses three long-lived git branches. The default bookkeeping branch is
+`master` (not `main`).
+
+| Branch | Role |
+|---|---|
+| `local` | Day-to-day development. Feature work lands here first. |
+| `preview` | Staging auto-deploy branch. Push or merge here triggers staging Supabase deploy and EAS preview delivery. |
+| `master` | Bookkeeping / default branch. Receives the tagged production commit via `deploy-to-production` after a successful production deploy. Does **not** auto-deploy staging or production. |
+
+### Flow
+
+1. Develop and open PRs against `local`.
+2. Merge `local` into `preview` when ready for staging.
+3. Push to `preview` auto-deploys:
+   - Supabase staging (GitHub Environment `staging`);
+   - EAS preview delivery (defaults to **OTA**; see [OTA vs binary](#ota-vs-binary)).
+4. After a successful preview deploy, CI creates (or reuses) annotated tag
+   `vX.Y.Z` on the deployed SHA, then patch-bumps the marketing version in
+   `mobile/app.config.ts` and `mobile/package.json`, commits that bump to
+   `local`, and fast-forwards `preview` to match. Bumps are **patch only**
+   (`X.Y.Z` → `X.Y.(Z+1)`). The tip of `preview` after the bump is **ahead**
+   of the release tag.
+5. Production mobile release is **only** via an existing preview-created tag
+   plus the `deploy-to-production` workflow (`workflow_dispatch`). Production
+   is never triggered by a push to `master` or `preview`.
+6. After production succeeds, `deploy-to-production` merges the **tagged**
+   commit into `master` for bookkeeping (not the post-bump `preview` tip).
+
+### Production tags
+
+Tag format is `vX.Y.Z`, where `X.Y.Z` matches the `version` field in
+`mobile/app.config.ts` at the tagged commit. Example: if app config says
+`1.2.3`, the release tag is `v1.2.3`.
+
+**Preview CI owns tag creation** for each marketing version on the SHA that
+was staged. Do **not** mint a new tag on the post-bump tip of `preview` /
+`local`. To ship production, pick the existing tag that corresponds to the
+accepted staging deploy, then run `deploy-to-production` with:
+
+- `delivery`: `ota` or `binary`;
+- `submit_to_stores`: optional, only meaningful with `delivery=binary`.
+
+#### Sticky-tag recovery
+
+If the post-deploy version bump fails after the tag was created, the next
+preview push at a new SHA will fail because `vX.Y.Z` already points at the
+old SHA. Recover by either:
+
+1. Completing the intended bump: run `npm run version:bump-patch --prefix mobile`
+   on `local`, commit `chore: bump app version to …`, push `local`, and
+   fast-forward `preview`; or
+2. Only with care, deleting and recreating the tag on the correct SHA (avoid
+   if anyone already consumed that tag).
+
+Do not create a second tag for the same marketing version on a different SHA.
+
+### runtimeVersion and OTA compatibility
+
+The app uses EAS `runtimeVersion` with the **fingerprint** policy, and
+`mobile/fingerprint.config.js` skips marketing version fields
+(`ExpoConfigVersions`) so CI patch bumps do not invalidate OTA against
+existing binaries. An OTA update remains compatible until the native
+fingerprint changes (native modules, SDK, or other fingerprint inputs). When
+the fingerprint changes, ship a new **binary** before relying on further OTAs.
+
+## OTA vs binary
+
+| Situation | Delivery | How |
+|---|---|---|
+| Routine JS/TS or asset change on staging | OTA | Push to `preview` (default) |
+| Staging needs a new native binary (fingerprint change, first install, credentials) | Binary | `workflow_dispatch` on the preview/EAS workflow with `delivery=binary` |
+| Production JS/TS or asset change, fingerprint unchanged | OTA | Tag `vX.Y.Z` + `deploy-to-production` with `delivery=ota` |
+| Production native change, store build, or first production binary | Binary | Tag `vX.Y.Z` + `deploy-to-production` with `delivery=binary` |
+| Ship the binary to App Store / Play | Binary + submit | Same as above with `submit_to_stores` enabled |
+
+Push notifications and store-signed installs still require a binary on device.
+OTA cannot replace the first install or a fingerprint-incompatible native
+change.
+
 ## Build and distribute the mobile app
+
+Prefer the CI paths above for staging and production. The commands below remain
+valid for one-off interactive builds (for example credential bootstrapping).
 
 ### Staging/preview
 
@@ -519,39 +605,104 @@ devices.
 
 ## CI adoption
 
-GitHub Actions in `.github/workflows/ci.yml` runs in two phases:
+CI covers merge gates, Supabase deploys, and EAS preview/production delivery.
+Use the pinned CLIs (`supabase@2.109.1` via root `npx supabase`,
+`eas-cli@21.0.2` via `npx`). Do not use floating `latest` versions.
 
-1. **Gates** (every PR and every push to `master`): mobile lint / typecheck /
-   expo-doctor / unit tests with coverage; database-types typecheck; Edge
-   Function `deno check` + `deno test`; local Supabase reset, database tests,
-   generated-type drift, and blocking local advisors.
-2. **Supabase deploy** (after all gates pass): staging on push to `master`
-   using GitHub Environment `staging`; production only via
-   `workflow_dispatch` with `target=production` using GitHub Environment
-   `production` (configure required reviewers in repo settings). Manual
-   `workflow_dispatch` with `target=staging` can also redeploy staging.
+### Merge gates
 
-EAS / Expo store builds are out of scope for this workflow. Do not add
-`EXPO_TOKEN` for these gates or Supabase deploys.
+Gates run on pull requests and on pushes to **`preview`**, plus
+`workflow_dispatch` on the CI workflow (must target the `preview` branch for
+deploy jobs). Direct pushes to `local` or `master` do **not** run gates unless
+opened as a PR.
 
-### GitHub Environment secrets
+- mobile lint / typecheck / expo-doctor / unit tests with coverage;
+- database-types typecheck;
+- Edge Function `deno check` + `deno test`;
+- local Supabase reset, database tests, generated-type drift, and blocking
+  local advisors.
+
+### Staging auto-deploy (`preview` only)
+
+After gates pass on a push to **`preview`** (or `workflow_dispatch` while
+checked out on `preview`):
+
+1. Create or reuse annotated tag `vX.Y.Z` on the deployed SHA.
+2. Deploy Supabase to staging (GitHub Environment `staging`).
+3. Deliver the mobile app to EAS preview (Environment `staging`). Default
+   delivery is **OTA**.
+4. For a staging **binary**, run CI via `workflow_dispatch` on the `preview`
+   branch with `delivery=binary` (dispatch from another branch is rejected).
+5. On success, patch-bump `mobile/app.config.ts` and `mobile/package.json`,
+   commit to `local`, and fast-forward `preview`.
+
+`master` is bookkeeping only. Pushing to `master` does **not** auto-deploy
+staging or production.
+
+### Production deploy (tag + `deploy-to-production`)
+
+Production is never auto-deployed from a branch push. Operators:
+
+1. Identify the preview-created tag `vX.Y.Z` for the accepted staging SHA
+   (do not create a new tag on the post-bump tip).
+2. Run `deploy-to-production` (`workflow_dispatch`) against that tag with
+   `delivery=ota` or `delivery=binary`, and optional `submit_to_stores`.
+3. Use GitHub Environment `production` (configure required reviewers in repo
+   settings).
+4. On success, the workflow merges the tagged commit into `master` for
+   bookkeeping.
+
+Staging redeploys use the CI workflow on `preview` (`push` or
+`workflow_dispatch` with `delivery`). Production Supabase and EAS ship only
+through `deploy-to-production`.
+
+### GitHub Environment and repository secrets checklist
 
 Create Environments **`staging`** and **`production`**. Put the same secret
 names on each environment with environment-specific values:
 
-| Secret | Purpose |
-|---|---|
-| `SUPABASE_ACCESS_TOKEN` | Supabase account access token for CI (`link` / `db push` / secrets / functions / advisors). Optional: one repo-level token if both projects share an account. |
-| `SUPABASE_PROJECT_ID` | Target project reference ID |
-| `SUPABASE_DB_PASSWORD` | Database password for `supabase link` / `db push` |
-| `PHONE_HMAC_SECRET` | Edge Function secret (≥32 random bytes per environment) |
-| `DISPATCH_WORKER_SECRET` | Edge Function secret for `dispatch-notifications` (≥32 random bytes per environment) |
+| Secret | Where | Purpose |
+|---|---|---|
+| `SUPABASE_ACCESS_TOKEN` | Environment (or one repo-level token if both projects share an account) | Supabase CLI / Management API (`link` / `db push` / secrets / functions / advisors) |
+| `SUPABASE_PROJECT_ID` | Environment | Target project reference ID |
+| `SUPABASE_DB_PASSWORD` | Environment | Database password for `supabase link` / `db push` |
+| `PHONE_HMAC_SECRET` | Environment | Edge Function secret (≥32 random bytes per environment) |
+| `DISPATCH_WORKER_SECRET` | Environment | Edge Function secret for `dispatch-notifications` (≥32 random bytes per environment) |
+| `EXPO_TOKEN` | Repository or shared secret used by EAS jobs | Expo personal access token for non-interactive `eas-cli@21.0.2` in CI |
 
 Do **not** put service-role keys, anon keys, or Twilio/CAPTCHA Auth dashboard
-secrets into this workflow. The deploy job upserts only
+secrets into these workflows. The Supabase deploy job upserts only
 `PHONE_HMAC_SECRET` and `DISPATCH_WORKER_SECRET` via
 `npx supabase secrets set --env-file` (file is never echoed). Migrations never
 use `--include-seed`. Functions deploy with `--use-api`.
+
+### Outside GitHub (manual, one-time)
+
+These are not GitHub secrets but must exist before EAS CI is useful:
+
+- `npx eas-cli@21.0.2 init` from `mobile/` and commit `extra.eas.projectId`
+  (do not invent a UUID; use the ID returned by Expo);
+- EAS environment variables for `preview` and `production` (see
+  [Configure EAS environment values](#4-configure-eas-environment-values));
+- EAS iOS/Android signing and push credentials (`eas credentials`);
+- App Store Connect / Google Play submission keys when using
+  `submit_to_stores`.
+
+Details and retrieval paths: [credentials.md](credentials.md).
+
+### GitHub Actions permissions
+
+Workflows that post-preview patch-bump and fast-forward branches, or that
+create release tags on preview deploy, need write access beyond the default
+`contents: read` used by gate-only jobs:
+
+- permission to push commits to `local` and to fast-forward `preview`;
+- permission to create annotated tags `vX.Y.Z` on preview deploy;
+- permission to merge or push bookkeeping updates to `master` from
+  `deploy-to-production`.
+
+Use a fine-scoped GitHub App or `GITHUB_TOKEN` with the minimum contents write
+needed for those branches and tags. Do not grant broader org admin tokens.
 
 ### One-time hosted prerequisites (not every CI run)
 
@@ -569,10 +720,6 @@ Supabase dashboard / Vault for that project:
 
 Staging and production must each use their own Twilio Verify service, HMAC,
 and worker secret. Never share production values with staging.
-
-Pin the same CLI versions used by this repository (`supabase@2.109.1` via
-root `npx supabase`); do not use floating `latest` versions in a production
-workflow.
 
 ## Source documentation
 

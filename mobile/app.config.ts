@@ -3,7 +3,10 @@ import type { ConfigContext, ExpoConfig } from 'expo/config';
 /**
  * Locked identity table — keep in sync with `src/lib/app-identity.ts`.
  * Duplicated here because Expo's config loader cannot require that TS module.
- * Omit `extra.eas.projectId` until `eas init` links this app to an EAS project.
+ *
+ * EAS Update / project linkage: omit `extra.eas.projectId` and `updates.url`
+ * until `eas init` (or `eas update:configure`) links this app. Do not invent
+ * a projectId; fingerprint runtimeVersion is safe to set ahead of that.
  */
 const APP_IDENTITIES = {
   preview: {
@@ -34,6 +37,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   name: identity.name,
   slug: 'sunsight',
   version: '1.0.0',
+  runtimeVersion: {
+    policy: 'fingerprint',
+  },
   description:
     'Sunsight helps friends notice the same exceptional sunset nearby. Sunset icons created by Magnific - Flaticon (https://www.flaticon.com/free-icons/sunset)',
   orientation: 'portrait',

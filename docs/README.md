@@ -15,8 +15,9 @@
   invocation.
 - [Schema and local backend operations](schema-operations.md): tables, RLS,
   private Storage, Vault, local verification, and explicitly deferred work.
-- [Deployment runbook](deployment.md): local verification, Supabase deployment,
-  EAS builds, store submission, post-release checks, and rollback.
+- [Deployment runbook](deployment.md): branch model (`local` / `preview` /
+  `master`), OTA vs binary, CI secrets, Supabase deployment, EAS delivery,
+  store submission, post-release checks, and rollback.
 
 These documents contain names and retrieval procedures only. Never record a
 real key, token, password, connection string, private key, or certificate in

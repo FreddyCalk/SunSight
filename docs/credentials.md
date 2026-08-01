@@ -70,7 +70,7 @@ These values are elevated server credentials that bypass Row Level Security.
 They must never appear in:
 
 - `EXPO_PUBLIC_*` variables;
-- `mobile/`, `app.json`, or a built app;
+- `mobile/`, `app.config.ts`, or a built app;
 - client-visible errors, analytics, or logs.
 
 If a backend process outside Supabase needs an administrative credential:
@@ -116,8 +116,11 @@ is suspected.
 ### Database password
 
 Use only for operations that connect to hosted Postgres, including linking or
-pushing migrations when the CLI requests it. Store separate
-`STAGING_DB_PASSWORD` and `PRODUCTION_DB_PASSWORD` values in CI.
+pushing migrations when the CLI requests it. Store the password as
+`SUPABASE_DB_PASSWORD` on each GitHub Environment (`staging` and
+`production`) with that environment's value. Do not use separate
+`STAGING_DB_PASSWORD` / `PRODUCTION_DB_PASSWORD` secret names — CI reads
+`SUPABASE_DB_PASSWORD` only.
 
 The initial password is chosen when the project is created. Supabase does not
 allow an existing password to be retrieved later:
@@ -265,7 +268,9 @@ For each hosted Supabase project:
    environment label.
 3. Open the Supabase Dashboard Auth CAPTCHA settings.
 4. Enable the selected provider and enter its secret key.
-5. Configure the mobile environment with only the site/public key.
+5. Configure the mobile environment with only the site/public key as
+   `EXPO_PUBLIC_CAPTCHA_SITE_KEY` (EAS `preview` / `production`, or
+   `mobile/.env.local` for local).
 6. Verify that a missing, expired, invalid, or replayed token prevents the OTP
    SMS from being sent.
 7. Verify that a resend requires both the cooldown and a fresh challenge token.
@@ -278,36 +283,65 @@ or verification-attempt limits.
 
 ## Expo and EAS
 
-The repository currently uses Expo SDK 57, but it has no `mobile/eas.json` and
-is not yet linked to an EAS project.
+The repository uses Expo SDK 57. `mobile/eas.json` is configured in-repo with
+**preview** and **production** profiles only (no EAS `development` profile).
+Local development uses `mobile/.env.local` against local Supabase and does not
+require an EAS profile. EAS project linkage (`extra.eas.projectId`) still
+requires a one-time manual `eas init`; see the First EAS push checklist in
+[deployment.md](deployment.md).
+
+### Locked app identifiers
+
+| Profile | iOS / Android ID | Scheme | Display name |
+|---|---|---|---|
+| preview | `com.sunsight.app.preview` | `sunsight-preview` | Sunsight Preview |
+| production | `com.sunsight.app` | `sunsight` | Sunsight |
+
+Environment mapping:
+
+- **preview** ↔ staging Supabase (Auth redirects allow `sunsight-preview://`)
+- **production** ↔ production Supabase (Auth redirects allow `sunsight://`)
 
 ### EAS project ID
 
 The EAS project ID is a UUID used to associate builds and Expo push tokens with
-the project. It is not a secret.
+the project. It is not a secret. Do not invent or paste a placeholder UUID;
+only commit the ID returned by Expo after `eas init`.
 
 1. Sign in at [expo.dev](https://expo.dev/).
 2. From `mobile/`, initialize/link the project with the pinned CLI command
-   documented in [deployment.md](deployment.md).
+   documented in [deployment.md](deployment.md):
+   `npx eas-cli@21.0.2 init`.
 3. Retrieve the ID from **Project settings**, or from
    `expo.extra.eas.projectId` after initialization updates the app config.
+4. Commit the project ID; never commit downloaded credentials.
 
 ### Expo personal access token
 
-Use as `EXPO_TOKEN` only in CI or other non-interactive automation.
+Use as `EXPO_TOKEN` for EAS CI (preview OTA/binary and
+`deploy-to-production`) and other non-interactive automation. Required for
+any GitHub Actions job that runs `eas-cli@21.0.2` against the Expo project.
 
 1. Open [Expo access tokens](https://expo.dev/settings/access-tokens).
 2. Under **Personal access tokens**, select **Create token**.
-3. Name it for the workflow and environment.
-4. Copy it into the CI secret store.
+3. Name it for the workflow (for example `sunsight-eas-ci`).
+4. Copy it into the GitHub repository secret store as `EXPO_TOKEN`.
 
 The token can act on resources available to its owner. Revoke it from the same
 page if compromised. Interactive developer machines should normally use
 `eas login` rather than persist an access token.
 
+Gate-only and Supabase-only jobs do not need `EXPO_TOKEN`. EAS delivery jobs
+do.
+
 ### EAS mobile environment variables
 
-Create these for each EAS environment after the EAS project exists:
+Create these for each EAS environment (`preview` and `production`) after the
+EAS project exists:
+
+- `EXPO_PUBLIC_SUPABASE_URL`
+- `EXPO_PUBLIC_SUPABASE_ANON_KEY`
+- `EXPO_PUBLIC_CAPTCHA_SITE_KEY` when the mobile CAPTCHA challenge is used
 
 ```sh
 npx eas-cli@21.0.2 env:create \
@@ -321,18 +355,87 @@ npx eas-cli@21.0.2 env:create \
   --name EXPO_PUBLIC_SUPABASE_ANON_KEY \
   --value '<staging-anon-key>' \
   --visibility plaintext
+
+npx eas-cli@21.0.2 env:create \
+  --environment preview \
+  --name EXPO_PUBLIC_CAPTCHA_SITE_KEY \
+  --value '<staging-captcha-site-key>' \
+  --visibility plaintext
 ```
 
 Repeat with production values and `--environment production`. Inspect names
 and visibility with:
 
 ```sh
+npx eas-cli@21.0.2 env:list --environment preview
 npx eas-cli@21.0.2 env:list --environment production
 ```
 
 These values are intentionally public, but they must still point to the correct
 environment. Never create an `EXPO_PUBLIC_` variable for a secret key, service
 role, database password, Twilio token, contact HMAC key, or store credential.
+
+## GitHub Environments and CI secrets
+
+Manual setup in the GitHub repository (Settings > Environments and Secrets).
+Branch and workflow behavior is documented in
+[deployment.md](deployment.md#branch-model-and-release-flow).
+
+### Environments to create
+
+| Environment | Used by | Notes |
+|---|---|---|
+| `staging` | Auto-deploy on push to `preview` | Optional protection rules; no production reviewers required |
+| `production` | Tag + `deploy-to-production` | Configure required reviewers before enabling production deploys |
+
+`master` is the default/bookkeeping branch and does not auto-deploy. Do not
+point staging auto-deploy at `master`.
+
+### Secrets on each GitHub Environment
+
+Put environment-specific values on **`staging`** and **`production`**:
+
+| Secret | Required for |
+|---|---|
+| `SUPABASE_ACCESS_TOKEN` | Supabase CLI / Management API in CI |
+| `SUPABASE_PROJECT_ID` | Target hosted project reference |
+| `SUPABASE_DB_PASSWORD` | `supabase link` / `db push` |
+| `PHONE_HMAC_SECRET` | Edge secret upsert (≥32 random bytes) |
+| `DISPATCH_WORKER_SECRET` | Edge secret upsert (≥32 random bytes) |
+
+Optional: one repository-level `SUPABASE_ACCESS_TOKEN` if both projects share
+the same Supabase account and token scope is acceptable.
+
+### Repository secret for EAS CI
+
+| Secret | Required for |
+|---|---|
+| `EXPO_TOKEN` | Preview OTA/binary jobs and `deploy-to-production` (`eas-cli@21.0.2`) |
+
+### Outside GitHub (not repository secrets)
+
+Complete these before the first useful EAS CI run. Do not invent UUIDs or
+paste placeholder project IDs.
+
+- Expo: `npx eas-cli@21.0.2 init` from `mobile/`; commit the returned
+  `extra.eas.projectId`.
+- EAS env vars for `preview` and `production`:
+  `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, and
+  `EXPO_PUBLIC_CAPTCHA_SITE_KEY` when used.
+- EAS credentials: iOS distribution/provisioning/APNs; Android keystore;
+  FCM V1 service-account key.
+- Store submit path only: App Store Connect API key and Google Play
+  submission service-account key uploaded to EAS.
+
+### Actions permissions for branch and tag writes
+
+Workflows that patch-bump after preview success, fast-forward `preview`,
+push to `local`, fast-forward `preview`, create preview release tags, or merge
+tagged production commits into `master` need contents write for those refs.
+Gate-only jobs can remain `contents: read`.
+Prefer a fine-scoped GitHub App or the workflow `GITHUB_TOKEN` with the
+minimum write set. See
+[deployment.md — GitHub Actions permissions](deployment.md#github-actions-permissions).
 
 ## Environment inventory
 
@@ -342,25 +445,30 @@ Local development uses three ignored files with separate responsibilities:
   `supabase/config.toml`;
 - `supabase/functions/.env.local`: `PHONE_HMAC_SECRET` and
   `DISPATCH_WORKER_SECRET`;
-- `mobile/.env.local`: `EXPO_PUBLIC_SUPABASE_URL` and
-  `EXPO_PUBLIC_SUPABASE_ANON_KEY`.
+- `mobile/.env.local`: `EXPO_PUBLIC_SUPABASE_URL`,
+  `EXPO_PUBLIC_SUPABASE_ANON_KEY`, and `EXPO_PUBLIC_CAPTCHA_SITE_KEY` when
+  used locally against a CAPTCHA-enabled Auth setup.
 
 For staging and production, configure each environment independently:
 
-- mobile/EAS plaintext: `EXPO_PUBLIC_SUPABASE_URL`,
-  `EXPO_PUBLIC_SUPABASE_ANON_KEY`;
+- mobile/EAS plaintext (`preview` ↔ staging, `production` ↔ production):
+  `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, and
+  `EXPO_PUBLIC_CAPTCHA_SITE_KEY` when used;
 - Supabase Edge Function secrets: `PHONE_HMAC_SECRET`,
   `DISPATCH_WORKER_SECRET`;
 - Supabase Vault: `PHONE_HMAC_SECRET`, with the same versioned value as the
   Edge secret in that environment;
 - Supabase Auth provider settings: Twilio Account SID, Twilio Auth Token,
-  Twilio Verify Service SID, and the CAPTCHA secret;
+  Twilio Verify Service SID, and the CAPTCHA secret; Auth redirects allow
+  `sunsight-preview://` on staging and `sunsight://` on production;
 - EAS-managed push credentials: Apple APNs key for iOS and Firebase FCM V1
   service-account key for Android;
-- CI/server-only stores as needed: `SUPABASE_ACCESS_TOKEN`,
-  `SUPABASE_PROJECT_ID`, `SUPABASE_DB_PASSWORD`, and `EXPO_TOKEN`.
+- GitHub Environment secrets (staging/production): `SUPABASE_ACCESS_TOKEN`,
+  `SUPABASE_PROJECT_ID`, `SUPABASE_DB_PASSWORD`, `PHONE_HMAC_SECRET`,
+  `DISPATCH_WORKER_SECRET`;
+- GitHub repository secret for EAS CI: `EXPO_TOKEN`.
 
-Only the two `EXPO_PUBLIC_*` mobile values and project identifiers are
+Only the `EXPO_PUBLIC_*` mobile values and project identifiers are
 client-safe. An anon key is public configuration constrained by RLS, not an
 administrative secret. Every other credential listed above is server-only.
 
@@ -397,17 +505,21 @@ necessarily revoke it at Apple; verify both systems during rotation.
 
 ## Firebase, FCM, and Google Play
 
-Use separate Firebase projects for staging and production Android application
-IDs.
+Use separate Firebase projects for staging and production. Register **both**
+Android package names in the matching Firebase project for that environment
+(or register each package on the project that will deliver its pushes):
+
+- `com.sunsight.app.preview` (EAS `preview` / staging)
+- `com.sunsight.app` (EAS `production`)
 
 ### Firebase Android configuration
 
 1. Open the [Firebase Console](https://console.firebase.google.com/).
 2. Create/select the environment's project.
 3. Open **Project settings > General > Your apps**.
-4. Register the Android application using the exact
-   `expo.android.package` value.
-5. Download `google-services.json`.
+4. Register each Android application using the exact package name above.
+5. Download `google-services.json` for each registered app as needed by the
+   build profile.
 
 The config file contains identifiers used by the client and is not equivalent
 to a service-account private key, but keep the downloaded file out of the

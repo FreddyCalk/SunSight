@@ -31,14 +31,27 @@ describe('notificationDataToSkyWindowPath', () => {
 });
 
 describe('parseSkyWindowUrl', () => {
-  it('parses the Expo scheme and route from app.json', () => {
-    assert.equal(parseSkyWindowUrl(`mobile://sky/${BLAST_ID}`), `/sky/${BLAST_ID}`);
-    assert.equal(parseSkyWindowUrl(`mobile:///sky/${BLAST_ID}`), `/sky/${BLAST_ID}`);
+  it('parses production and preview schemes from APP_SCHEMES', () => {
+    assert.equal(parseSkyWindowUrl(`sunsight://sky/${BLAST_ID}`), `/sky/${BLAST_ID}`);
+    assert.equal(parseSkyWindowUrl(`sunsight:///sky/${BLAST_ID}`), `/sky/${BLAST_ID}`);
+    assert.equal(
+      parseSkyWindowUrl(`sunsight-preview://sky/${BLAST_ID}`),
+      `/sky/${BLAST_ID}`,
+    );
+    assert.equal(
+      parseSkyWindowUrl(`sunsight-preview:///sky/${BLAST_ID}`),
+      `/sky/${BLAST_ID}`,
+    );
   });
 
-  it('rejects other schemes, routes, and extra segments', () => {
+  it('rejects foreign schemes, routes, and extra segments', () => {
     assert.equal(parseSkyWindowUrl(`https://sky/${BLAST_ID}`), null);
-    assert.equal(parseSkyWindowUrl(`mobile://settings/${BLAST_ID}`), null);
-    assert.equal(parseSkyWindowUrl(`mobile://sky/${BLAST_ID}/share`), null);
+    assert.equal(parseSkyWindowUrl(`mobile://sky/${BLAST_ID}`), null);
+    assert.equal(parseSkyWindowUrl(`sunsight://settings/${BLAST_ID}`), null);
+    assert.equal(parseSkyWindowUrl(`sunsight://sky/${BLAST_ID}/share`), null);
+    assert.equal(
+      parseSkyWindowUrl(`sunsight-preview://settings/${BLAST_ID}`),
+      null,
+    );
   });
 });

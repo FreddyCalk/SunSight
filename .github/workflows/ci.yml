@@ -1,20 +1,29 @@
-# Sunsight CI — minimum merge gates from .cursor/rules/requirements.mdc §14:
-# formatting/linting, type checking, unit tests, a clean local migration reset,
-# database tests, generated-type drift, and database advisors.
+# Sunsight CI — Phase 1 parallel gates; Phase 2 preview deploy on `preview`
+# (tag → staging Supabase → EAS → version bump). Production mobile/Supabase
+# ships via a separate deploy-to-production workflow (tag + workflow_dispatch).
 #
-# Run the same gates locally (see docs/local-runbook.md and docs/deployment.md):
+# Merge gates from .cursor/rules/requirements.mdc §14: lint, typecheck, unit
+# tests + coverage, expo-doctor, Edge Function check/tests, local migration
+# reset, database tests, generated-type drift, and blocking advisors.
+#
+# Local parity (see docs/local-runbook.md and docs/deployment.md):
 #
 #   # Mobile (no Docker):
 #   npm ci --prefix mobile
 #   npm run lint --prefix mobile
 #   (cd mobile && npx tsc --noEmit -p tsconfig.json)
-#   npm test --prefix mobile
+#   (cd mobile && npx expo-doctor)
+#   npm run test:coverage --prefix mobile
 #
 #   # Generated database types typecheck (no Docker):
 #   npm ci --prefix packages/database-types
 #   npm run typecheck --prefix packages/database-types
 #
-#   # Supabase (Docker required):
+#   # Edge Functions (Deno; no Docker):
+#   npm run functions:check
+#   npm run functions:test
+#
+#   # Supabase DB gates (Docker required):
 #   npm ci
 #   cp .env.example .env
 #   npx supabase start
@@ -24,38 +33,54 @@
 #   npm run check:drift --prefix packages/database-types
 #   npx supabase db advisors --local --type all --level warn --fail-on error
 #
-# The Supabase CLI version is pinned by the root package.json devDependency and
-# invoked through `npx supabase`; this workflow does not install a separate CLI.
-# Advisors are non-blocking until the first remote project exists (see the
-# `continue-on-error` step below and docs/deployment.md "CI adoption").
+# Supabase CLI is pinned by root package.json (supabase@2.109.1) via `npx supabase`.
+# Staging + EAS preview auto-deploy on push to `preview` (OTA by default).
+# Push to `master` does not deploy. Production is never triggered here.
 
 name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [preview]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      delivery:
+        description: EAS preview delivery mode
+        required: true
+        type: choice
+        options:
+          - ota
+          - binary
+        default: ota
 
 permissions:
   contents: read
 
+# PRs cancel superseded runs. Preview deploy+bump shares a non-cancelling
+# group so a mid-bump push cannot abort the version commit / fast-forward.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number)
+        || format('{0}-preview-deploy', github.workflow) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # React Native 0.86 / Expo SDK 57 tooling; requirements ask for Node 22.13+.
-  NODE_VERSION: "22.13.0"
+  NODE_VERSION: "24.18.1"
+  # Lockfile v5 in supabase/functions/deno.lock requires Deno ≥2.3.
+  DENO_VERSION: "2.9.4"
 
 jobs:
   mobile:
-    name: Mobile lint, typecheck, unit tests
+    name: Mobile lint, typecheck, doctor, coverage
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v7
       - name: Set up Node
-        uses: actions/setup-node@v4.1.0
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -69,8 +94,11 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit -p tsconfig.json
         working-directory: mobile
-      - name: Unit tests
-        run: npm test
+      - name: Expo doctor
+        run: npx expo-doctor
+        working-directory: mobile
+      - name: Unit tests with coverage
+        run: npm run test:coverage
         working-directory: mobile
 
   database-types:
@@ -78,9 +106,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v7
       - name: Set up Node
-        uses: actions/setup-node@v4.1.0
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -92,14 +120,29 @@ jobs:
         run: npm run typecheck
         working-directory: packages/database-types
 
-  supabase:
+  edge-functions:
+    name: Edge Function typecheck and tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+      - name: Typecheck Edge Functions
+        run: npm run functions:check
+      - name: Deno unit tests
+        run: npm run functions:test
+
+  supabase-db:
     name: Supabase reset, db tests, types drift, advisors
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v7
       - name: Set up Node
-        uses: actions/setup-node@v4.1.0
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -118,9 +161,233 @@ jobs:
         run: npx supabase test db supabase/tests/foundation_test.sql --local
       - name: Generated database types drift check
         run: npm run check:drift --prefix packages/database-types
-      - name: Database advisors (non-blocking until first remote project)
-        continue-on-error: true
+      - name: Database advisors (blocking)
         run: npx supabase db advisors --local --type all --level warn --fail-on error
       - name: Stop local Supabase stack
         if: always()
         run: npx supabase stop --no-backup
+
+  # Preview deploy path (tag → staging → EAS → bump). Skips the bot's own
+  # post-deploy bump commit so fast-forwarding `preview` does not re-enter.
+  tag-preview:
+    name: Version check and release tag
+    needs: [mobile, database-types, edge-functions, supabase-db]
+    if: >
+      github.ref == 'refs/heads/preview' &&
+      (
+        (github.event_name == 'push' &&
+          !startsWith(github.event.head_commit.message, 'chore: bump app version to ')) ||
+        (github.event_name == 'workflow_dispatch')
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Assert app.config.ts and package.json versions match
+        run: npm run version:check --prefix mobile
+      - name: Resolve version and create annotated tag if needed
+        id: resolve
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./mobile/package.json').version")"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version from mobile/package.json: ${VERSION}" >&2
+            exit 1
+          fi
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            EXISTING_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
+            if [[ "$EXISTING_SHA" != "$GITHUB_SHA" ]]; then
+              echo "Tag ${TAG} already exists on ${EXISTING_SHA}, not ${GITHUB_SHA}" >&2
+              exit 1
+            fi
+            echo "Tag ${TAG} already points at ${GITHUB_SHA}; leaving it in place"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" "$GITHUB_SHA" -m "$TAG"
+            git push origin "refs/tags/${TAG}"
+            echo "Created annotated tag ${TAG} at ${GITHUB_SHA}"
+          fi
+
+  deploy-supabase:
+    name: Deploy Supabase (staging)
+    needs: [tag-preview]
+    if: >
+      needs.tag-preview.result == 'success' &&
+      github.ref == 'refs/heads/preview' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    environment: Staging
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install root tooling (pinned Supabase CLI)
+        run: npm ci
+      - name: Link Supabase project
+        run: >
+          npx supabase link
+          --project-ref "$SUPABASE_PROJECT_ID"
+          --password "$SUPABASE_DB_PASSWORD"
+          --yes
+      - name: Dry-run migrations (never include seed)
+        run: npx supabase db push --linked --dry-run
+      - name: Apply migrations (never include seed)
+        run: npx supabase db push --linked
+      - name: Upsert Edge Function secrets
+        env:
+          PHONE_HMAC_SECRET: ${{ secrets.PHONE_HMAC_SECRET }}
+          DISPATCH_WORKER_SECRET: ${{ secrets.DISPATCH_WORKER_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ ${#PHONE_HMAC_SECRET} -lt 32 ]]; then
+            echo "PHONE_HMAC_SECRET must be set and at least 32 characters" >&2
+            exit 1
+          fi
+          if [[ ${#DISPATCH_WORKER_SECRET} -lt 32 ]]; then
+            echo "DISPATCH_WORKER_SECRET must be set and at least 32 characters" >&2
+            exit 1
+          fi
+          ENV_FILE="$(mktemp)"
+          trap 'rm -f "$ENV_FILE"' EXIT
+          umask 077
+          {
+            printf 'PHONE_HMAC_SECRET=%s\n' "$PHONE_HMAC_SECRET"
+            printf 'DISPATCH_WORKER_SECRET=%s\n' "$DISPATCH_WORKER_SECRET"
+          } > "$ENV_FILE"
+          npx supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" --env-file "$ENV_FILE"
+      - name: Deploy Edge Functions
+        run: >
+          npx supabase functions deploy
+          --project-ref "$SUPABASE_PROJECT_ID"
+          --use-api
+      - name: Hosted database advisors (blocking)
+        run: >
+          npx supabase db advisors
+          --linked
+          --type all
+          --level warn
+          --fail-on error
+
+  eas-preview:
+    name: EAS preview (${{ github.event_name == 'workflow_dispatch' && github.event.inputs.delivery || 'ota' }})
+    needs: [tag-preview]
+    if: >
+      needs.tag-preview.result == 'success' &&
+      github.ref == 'refs/heads/preview' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    environment: Staging
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      TAG: ${{ needs.tag-preview.outputs.tag }}
+      DELIVERY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.delivery || 'ota' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install mobile dependencies
+        run: npm ci
+        working-directory: mobile
+      - name: Require EXPO_TOKEN
+        run: |
+          set -euo pipefail
+          if [[ -z "${EXPO_TOKEN:-}" ]]; then
+            echo "EXPO_TOKEN secret is required for EAS preview delivery" >&2
+            exit 1
+          fi
+      - name: Deliver via EAS (OTA or binary)
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          case "$DELIVERY" in
+            ota)
+              npx eas-cli@21.0.2 update \
+                --channel preview \
+                --environment preview \
+                --non-interactive \
+                --message "$TAG"
+              ;;
+            binary)
+              npx eas-cli@21.0.2 build \
+                --profile preview \
+                --platform all \
+                --non-interactive
+              ;;
+            *)
+              echo "Unknown delivery mode: ${DELIVERY}" >&2
+              exit 1
+              ;;
+          esac
+
+  bump-version:
+    name: Patch-bump on local and fast-forward preview
+    needs: [tag-preview, deploy-supabase, eas-preview]
+    if: >
+      always() &&
+      !cancelled() &&
+      github.ref == 'refs/heads/preview' &&
+      needs.tag-preview.result == 'success' &&
+      needs.deploy-supabase.result == 'success' &&
+      needs.eas-preview.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout deployed commit
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Bump patch, push local, fast-forward preview
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin local preview || true
+          git checkout -B local "$GITHUB_SHA"
+
+          npm run version:bump-patch --prefix mobile
+          NEW_VERSION="$(node -p "require('./mobile/package.json').version")"
+
+          git add mobile/app.config.ts mobile/package.json
+          git commit -m "chore: bump app version to ${NEW_VERSION}"
+
+          git push origin HEAD:local
+          git push origin HEAD:preview
+          echo "Pushed bump ${NEW_VERSION} to local and fast-forwarded preview"

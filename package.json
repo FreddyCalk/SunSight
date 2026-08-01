@@ -3,13 +3,15 @@
   "version": "0.0.0",
   "private": true,
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "auth:smoke": "node scripts/auth-smoke.mjs",
     "supabase:start": "supabase start",
     "supabase:reset": "supabase db reset",
-    "types:gen": "supabase gen types typescript --local > packages/database-types/src/database.types.ts"
+    "types:gen": "supabase gen types typescript --local > packages/database-types/src/database.types.ts",
+    "functions:check": "deno check --config=supabase/functions/deno.json supabase/functions/_shared/contracts.ts supabase/functions/_shared/crypto.ts supabase/functions/_shared/http.ts supabase/functions/_shared/image.ts supabase/functions/_shared/push.ts supabase/functions/_shared/supabase.ts supabase/functions/complete-photo-upload/index.ts supabase/functions/create-blast/index.ts supabase/functions/dispatch-notifications/index.ts supabase/functions/get-blast-access/index.ts supabase/functions/match-contacts/index.ts supabase/functions/register-device/index.ts supabase/functions/upsert-location/index.ts",
+    "functions:test": "deno test --allow-env=DISPATCH_WORKER_SECRET --config=supabase/functions/deno.json supabase/functions/_shared/*_test.ts"
   },
   "devDependencies": {
     "supabase": "2.109.1"

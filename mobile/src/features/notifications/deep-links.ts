@@ -1,5 +1,12 @@
+import { APP_SCHEMES } from '../../lib/app-identity';
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Accept preview and production schemes so either build variant's URLs parse. */
+const ALLOWED_PROTOCOLS = new Set(
+  Object.values(APP_SCHEMES).map((scheme) => `${scheme}:`),
+);
 
 export type SkyWindowPath = `/sky/${string}`;
 
@@ -23,7 +30,7 @@ export function parseSkyWindowUrl(value: unknown): SkyWindowPath | null {
 
   try {
     const url = new URL(value);
-    if (url.protocol !== 'mobile:') {
+    if (!ALLOWED_PROTOCOLS.has(url.protocol)) {
       return null;
     }
 

@@ -1,24 +1,17 @@
 {
   "fill" : {
-    "automatic-gradient" : "extended-srgb:0.00000,0.47843,1.00000,1.00000"
+    "solid" : "display-p3:0.99216,0.36471,0.21569,1.00000"
   },
   "groups" : [
     {
       "layers" : [
         {
-          "image-name" : "expo-symbol 2.svg",
-          "name" : "expo-symbol 2",
+          "glass" : false,
+          "image-name" : "sunset.png",
+          "name" : "sunset",
           "position" : {
-            "scale" : 1,
-            "translation-in-points" : [
-              1.1008400065293245e-05,
-              -16.046875
-            ]
+            "scale" : 1
           }
-        },
-        {
-          "image-name" : "grid.png",
-          "name" : "grid"
         }
       ],
       "shadow" : {

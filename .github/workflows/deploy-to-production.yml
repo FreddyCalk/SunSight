@@ -1,0 +1,414 @@
+# Sunsight production deploy — tag + workflow_dispatch only.
+# Never triggered by push to master or preview. No version bump.
+#
+# Flow: resolve tag SHA → gates (parity with ci.yml) → staging-shaped
+# Supabase deploy (Environment production) + EAS production delivery →
+# bookkeeping merge of the tagged commit into master.
+#
+# Pins match .github/workflows/ci.yml:
+#   NODE_VERSION 24.18.1, DENO_VERSION 2.9.4,
+#   checkout@v4.2.2, setup-node@v4.1.0, eas-cli@21.0.2,
+#   Supabase CLI via root npm ci.
+
+name: Deploy to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to deploy (vX.Y.Z; refs/tags/ prefix optional)
+        required: true
+        type: string
+      delivery:
+        description: EAS production delivery mode
+        required: true
+        type: choice
+        options:
+          - ota
+          - binary
+      submit_to_stores:
+        description: After binary build, submit to App Store / Play (ignored unless delivery=binary)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-to-production
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24.18.1"
+  DENO_VERSION: "2.9.4"
+
+jobs:
+  resolve-tag:
+    name: Resolve release tag SHA
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Normalize tag and validate inputs
+        id: normalize
+        run: |
+          set -euo pipefail
+          RAW="${{ github.event.inputs.tag }}"
+          TAG="${RAW#refs/tags/}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid tag '${RAW}' (normalized '${TAG}'); expected vX.Y.Z" >&2
+            exit 1
+          fi
+
+          DELIVERY="${{ github.event.inputs.delivery }}"
+          SUBMIT="${{ github.event.inputs.submit_to_stores }}"
+          if [[ "$SUBMIT" == "true" && "$DELIVERY" != "binary" ]]; then
+            echo "submit_to_stores requires delivery=binary (got delivery=${DELIVERY})" >&2
+            exit 1
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Normalized tag ${TAG}; delivery=${DELIVERY}; submit_to_stores=${SUBMIT}"
+
+      - name: Checkout immutable tag
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: refs/tags/${{ steps.normalize.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Resolve SHA and assert version matches tag
+        id: resolve
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.normalize.outputs.tag }}"
+          SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          npm run version:check --prefix mobile
+          VERSION="$(node -p "require('./mobile/package.json').version")"
+          EXPECTED="v${VERSION}"
+          if [[ "$TAG" != "$EXPECTED" ]]; then
+            echo "Tag ${TAG} does not match mobile/package.json version ${EXPECTED} at ${SHA}" >&2
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "Resolved ${TAG} -> ${SHA}"
+
+  mobile:
+    name: Mobile lint, typecheck, doctor, coverage
+    needs: [resolve-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ needs.resolve-tag.outputs.sha }}
+      - name: Set up Node
+        uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install mobile dependencies
+        run: npm ci
+        working-directory: mobile
+      - name: Lint
+        run: npm run lint
+        working-directory: mobile
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.json
+        working-directory: mobile
+      - name: Expo doctor
+        run: npx expo-doctor
+        working-directory: mobile
+      - name: Unit tests with coverage
+        run: npm run test:coverage
+        working-directory: mobile
+
+  database-types:
+    name: Database types typecheck
+    needs: [resolve-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ needs.resolve-tag.outputs.sha }}
+      - name: Set up Node
+        uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: packages/database-types/package-lock.json
+      - name: Install database-types dependencies
+        run: npm ci
+        working-directory: packages/database-types
+      - name: Typecheck generated types
+        run: npm run typecheck
+        working-directory: packages/database-types
+
+  edge-functions:
+    name: Edge Function typecheck and tests
+    needs: [resolve-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ needs.resolve-tag.outputs.sha }}
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+      - name: Typecheck Edge Functions
+        run: npm run functions:check
+      - name: Deno unit tests
+        run: npm run functions:test
+
+  supabase-db:
+    name: Supabase reset, db tests, types drift, advisors
+    needs: [resolve-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ needs.resolve-tag.outputs.sha }}
+      - name: Set up Node
+        uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install root tooling (pinned Supabase CLI)
+        run: npm ci
+      - name: Provide local config env for config.toml substitution
+        run: cp .env.example .env
+      - name: Start local Supabase stack
+        run: npx supabase start
+      - name: Reset local database from migrations and seed
+        run: npx supabase db reset --local
+      - name: Database tests (RLS, recipient selection, edge contracts)
+        run: npx supabase test db supabase/tests/database --local
+      - name: Database tests (foundation)
+        run: npx supabase test db supabase/tests/foundation_test.sql --local
+      - name: Generated database types drift check
+        run: npm run check:drift --prefix packages/database-types
+      - name: Database advisors (blocking)
+        run: npx supabase db advisors --local --type all --level warn --fail-on error
+      - name: Stop local Supabase stack
+        if: always()
+        run: npx supabase stop --no-backup
+
+  deploy-supabase:
+    name: Deploy Supabase (production)
+    needs: [resolve-tag, mobile, database-types, edge-functions, supabase-db]
+    runs-on: ubuntu-latest
+    environment: Production
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ needs.resolve-tag.outputs.sha }}
+      - name: Set up Node
+        uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install root tooling (pinned Supabase CLI)
+        run: npm ci
+      - name: Link Supabase project
+        run: >
+          npx supabase link
+          --project-ref "$SUPABASE_PROJECT_ID"
+          --password "$SUPABASE_DB_PASSWORD"
+          --yes
+      - name: Dry-run migrations (never include seed)
+        run: npx supabase db push --linked --dry-run
+      - name: Apply migrations (never include seed)
+        run: npx supabase db push --linked
+      - name: Upsert Edge Function secrets
+        env:
+          PHONE_HMAC_SECRET: ${{ secrets.PHONE_HMAC_SECRET }}
+          DISPATCH_WORKER_SECRET: ${{ secrets.DISPATCH_WORKER_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ ${#PHONE_HMAC_SECRET} -lt 32 ]]; then
+            echo "PHONE_HMAC_SECRET must be set and at least 32 characters" >&2
+            exit 1
+          fi
+          if [[ ${#DISPATCH_WORKER_SECRET} -lt 32 ]]; then
+            echo "DISPATCH_WORKER_SECRET must be set and at least 32 characters" >&2
+            exit 1
+          fi
+          ENV_FILE="$(mktemp)"
+          trap 'rm -f "$ENV_FILE"' EXIT
+          umask 077
+          {
+            printf 'PHONE_HMAC_SECRET=%s\n' "$PHONE_HMAC_SECRET"
+            printf 'DISPATCH_WORKER_SECRET=%s\n' "$DISPATCH_WORKER_SECRET"
+          } > "$ENV_FILE"
+          npx supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" --env-file "$ENV_FILE"
+      - name: Deploy Edge Functions
+        run: >
+          npx supabase functions deploy
+          --project-ref "$SUPABASE_PROJECT_ID"
+          --use-api
+      - name: Hosted database advisors (blocking)
+        run: >
+          npx supabase db advisors
+          --linked
+          --type all
+          --level warn
+          --fail-on error
+
+  eas-production:
+    name: EAS production (${{ github.event.inputs.delivery }})
+    needs: [resolve-tag, mobile, database-types, edge-functions, supabase-db]
+    runs-on: ubuntu-latest
+    environment: Production
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      TAG: ${{ needs.resolve-tag.outputs.tag }}
+      DELIVERY: ${{ github.event.inputs.delivery }}
+      SUBMIT: ${{ github.event.inputs.submit_to_stores }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ needs.resolve-tag.outputs.sha }}
+      - name: Set up Node
+        uses: actions/setup-node@v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install mobile dependencies
+        run: npm ci
+        working-directory: mobile
+      - name: Require EXPO_TOKEN
+        run: |
+          set -euo pipefail
+          if [[ -z "${EXPO_TOKEN:-}" ]]; then
+            echo "EXPO_TOKEN secret is required for EAS production delivery" >&2
+            exit 1
+          fi
+      - name: Reject submit without binary delivery
+        run: |
+          set -euo pipefail
+          if [[ "${SUBMIT}" == "true" && "${DELIVERY}" != "binary" ]]; then
+            echo "submit_to_stores requires delivery=binary (got delivery=${DELIVERY})" >&2
+            exit 1
+          fi
+      - name: Deliver via EAS (OTA or binary)
+        id: deliver
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          case "$DELIVERY" in
+            ota)
+              npx eas-cli@21.0.2 update \
+                --channel production \
+                --environment production \
+                --non-interactive \
+                --message "$TAG"
+              ;;
+            binary)
+              BUILD_JSON="$(npx eas-cli@21.0.2 build \
+                --profile production \
+                --platform all \
+                --non-interactive \
+                --json)"
+              printf '%s\n' "$BUILD_JSON" > /tmp/eas-builds.json
+              BUILD_IDS="$(node -e '
+                const fs = require("fs");
+                const raw = JSON.parse(fs.readFileSync("/tmp/eas-builds.json", "utf8"));
+                const builds = Array.isArray(raw) ? raw : [raw];
+                const ids = builds.map((b) => b && b.id).filter(Boolean);
+                if (!ids.length) {
+                  console.error("eas build --json produced no build ids");
+                  process.exit(1);
+                }
+                process.stdout.write(ids.join("\n"));
+              ')"
+              {
+                echo "build_ids<<EOF"
+                printf '%s\n' "$BUILD_IDS"
+                echo "EOF"
+              } >> "$GITHUB_OUTPUT"
+              echo "Captured build ids:"
+              printf '%s\n' "$BUILD_IDS"
+              ;;
+            *)
+              echo "Unknown delivery mode: ${DELIVERY}" >&2
+              exit 1
+              ;;
+          esac
+      - name: Submit binary to stores
+        if: env.SUBMIT == 'true'
+        working-directory: mobile
+        env:
+          BUILD_IDS: ${{ steps.deliver.outputs.build_ids }}
+        run: |
+          set -euo pipefail
+          if [[ "${DELIVERY}" != "binary" ]]; then
+            echo "submit_to_stores requires delivery=binary (got delivery=${DELIVERY})" >&2
+            exit 1
+          fi
+          if [[ -z "${BUILD_IDS:-}" ]]; then
+            echo "No build ids from eas build; refusing to submit --latest" >&2
+            exit 1
+          fi
+          while IFS= read -r BID; do
+            [[ -z "$BID" ]] && continue
+            npx eas-cli@21.0.2 submit \
+              --id "$BID" \
+              --profile production \
+              --non-interactive
+          done <<< "$BUILD_IDS"
+
+  merge-master:
+    name: Merge tagged commit into master
+    needs: [resolve-tag, deploy-supabase, eas-production]
+    if: >
+      always() &&
+      !cancelled() &&
+      needs.resolve-tag.result == 'success' &&
+      needs.deploy-supabase.result == 'success' &&
+      needs.eas-production.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Fast-forward or merge tag into master
+        env:
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+          SHA: ${{ needs.resolve-tag.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin master "${SHA}" "refs/tags/${TAG}:refs/tags/${TAG}"
+          git checkout -B master origin/master
+
+          if git merge --ff-only "${SHA}"; then
+            echo "master fast-forwarded (or already contains) ${TAG} @ ${SHA}"
+          else
+            git merge --no-ff "${SHA}" \
+              -m "chore: merge ${TAG} into master for production bookkeeping"
+            echo "Created merge commit of ${TAG} @ ${SHA} into master"
+          fi
+
+          git push origin HEAD:master
+          echo "Pushed master bookkeeping for ${TAG}; no version bump"

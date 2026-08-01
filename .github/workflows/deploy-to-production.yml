@@ -205,7 +205,7 @@ jobs:
     name: Deploy Supabase (production)
     needs: [resolve-tag, mobile, database-types, edge-functions, supabase-db]
     runs-on: ubuntu-latest
-    environment: production
+    environment: Production
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
@@ -272,7 +272,7 @@ jobs:
     name: EAS production (${{ github.event.inputs.delivery }})
     needs: [resolve-tag, mobile, database-types, edge-functions, supabase-db]
     runs-on: ubuntu-latest
-    environment: production
+    environment: Production
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       TAG: ${{ needs.resolve-tag.outputs.tag }}

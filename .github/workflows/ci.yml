@@ -306,8 +306,8 @@ jobs:
     environment: Staging
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-      EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-      EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+      EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
       TAG: ${{ needs.tag-preview.outputs.tag }}
       DELIVERY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.delivery || vars.UPDATE_DELIVERY_METHOD || 'binary' }}
       # Repo variable; unset/empty falls back to android (ios | android | all).

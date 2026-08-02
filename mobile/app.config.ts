@@ -48,6 +48,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   userInterfaceStyle: 'automatic',
   ios: {
     ...config.ios,
+    // Liquid Glass `./assets/expo.icon` still crashes actool on Xcode 26.6; PNG unblocks builds.
     icon: './assets/expo.icon/Assets/sunset.png',
     bundleIdentifier: identity.iosBundleIdentifier,
   },

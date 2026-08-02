@@ -111,35 +111,45 @@ Run once per Expo account / project before the first staging binary:
 1. `npx eas-cli@21.0.2 login`
 2. `npx eas-cli@21.0.2 init` (from `mobile/`)
 3. Commit `extra.eas.projectId` in app configuration
-4. Create EAS env vars for `preview` and `production` (see below)
+4. Put the three `EXPO_PUBLIC_*` values on GitHub Environments `Staging` and
+   `Production` (CI upserts them into EAS before delivery; see below)
 5. Configure iOS and Android credentials (`eas credentials`)
 6. `npx eas-cli@21.0.2 build --profile preview`
 
 ### 4. Configure EAS environment values
 
-Create the staging values in EAS `preview` and production values in EAS
-`production`. Required names:
+Authoritative source for staging and production mobile public config is the
+matching GitHub Environment (`Staging` → EAS `preview`, `Production` → EAS
+`production`). Required secret names on each environment:
 
 - `EXPO_PUBLIC_SUPABASE_URL`
 - `EXPO_PUBLIC_SUPABASE_ANON_KEY`
-- `EXPO_PUBLIC_CAPTCHA_SITE_KEY` when the mobile CAPTCHA challenge is used
+- `EXPO_PUBLIC_CAPTCHA_SITE_KEY`
+
+Before EAS preview or production delivery, CI upserts these into EAS with
+`npx eas-cli@21.0.2 env:create --force` and `plaintext` visibility. CI does
+not write `mobile/.env.local` or other local files. Local development
+continues to read the same names from `mobile/.env.local` (or optionally
+`eas env:pull` on an interactive machine).
+
+For a one-off interactive bootstrap or inspection:
 
 ```sh
 cd mobile
 
-npx eas-cli@21.0.2 env:create \
+npx eas-cli@21.0.2 env:create --force \
   --environment preview \
   --name EXPO_PUBLIC_SUPABASE_URL \
   --value 'https://<staging-project-ref>.supabase.co' \
   --visibility plaintext
 
-npx eas-cli@21.0.2 env:create \
+npx eas-cli@21.0.2 env:create --force \
   --environment preview \
   --name EXPO_PUBLIC_SUPABASE_ANON_KEY \
   --value '<staging-anon-key>' \
   --visibility plaintext
 
-npx eas-cli@21.0.2 env:create \
+npx eas-cli@21.0.2 env:create --force \
   --environment preview \
   --name EXPO_PUBLIC_CAPTCHA_SITE_KEY \
   --value '<staging-captcha-site-key>' \
@@ -147,16 +157,24 @@ npx eas-cli@21.0.2 env:create \
 ```
 
 Repeat for production with the production project and
-`--environment production`. Then verify:
+`--environment production`.
+
+After any CI run that syncs EAS env (preview or production delivery),
+operators verify the upserted values the same way:
 
 ```sh
+cd mobile
 npx eas-cli@21.0.2 env:list --environment preview
 npx eas-cli@21.0.2 env:list --environment production
 ```
 
+Changing GitHub Environment secrets alone does **not** update already-shipped
+binaries or OTAs. Installed clients keep the values baked in at the last EAS
+delivery that ran the sync step. The next preview or production EAS job that
+upserts and delivers is what applies the new values to a new binary/OTA.
+
 The publishable key, URL, and CAPTCHA site key are public by design. No server
-secret may use the `EXPO_PUBLIC_` prefix. Local development continues to read
-the same names from `mobile/.env.local` against local Supabase.
+secret may use the `EXPO_PUBLIC_` prefix.
 
 ### 5. Configure signing, push, and submission credentials
 
@@ -381,7 +399,7 @@ Sunsight uses three long-lived git branches. The default bookkeeping branch is
 1. Develop and open PRs against `local`.
 2. Merge `local` into `preview` when ready for staging.
 3. Push to `preview` auto-deploys:
-   - Supabase staging (GitHub Environment `staging`);
+   - Supabase staging (GitHub Environment `Staging`);
    - EAS preview delivery (defaults to **OTA**; see [OTA vs binary](#ota-vs-binary)).
 4. After a successful preview deploy, CI creates (or reuses) annotated tag
    `vX.Y.Z` on the deployed SHA, then patch-bumps the marketing version in
@@ -576,6 +594,18 @@ devices.
 
 ## Rollback
 
+### EAS environment sync
+
+- Reverting the CI sync steps leaves EAS with the last successfully upserted
+  values; GitHub changes alone do not clear or rewrite them.
+- To undo a bad upsert: put the correct values back on the matching GitHub
+  Environment (`Staging` / `Production`) and re-run the EAS delivery job so
+  sync runs again, or manually
+  `npx eas-cli@21.0.2 env:create --force` with the prior values for that
+  `--environment`.
+- Already-shipped binaries/OTAs still hold the old baked-in config until a
+  subsequent delivery that includes the corrected sync.
+
 ### Mobile
 
 - Stop or pause the store rollout in App Store Connect or Google Play.
@@ -635,8 +665,8 @@ After gates pass on a push to **`preview`** (or `workflow_dispatch` while
 checked out on `preview`):
 
 1. Create or reuse annotated tag `vX.Y.Z` on the deployed SHA.
-2. Deploy Supabase to staging (GitHub Environment `staging`).
-3. Deliver the mobile app to EAS preview (Environment `staging`). Default
+2. Deploy Supabase to staging (GitHub Environment `Staging`).
+3. Deliver the mobile app to EAS preview (Environment `Staging`). Default
    delivery is **OTA**.
 4. For a staging **binary**, run CI via `workflow_dispatch` on the `preview`
    branch with `delivery=binary` (dispatch from another branch is rejected).
@@ -656,7 +686,7 @@ Production is never auto-deployed from a branch push. Operators:
    (do not create a new tag on the post-bump tip).
 2. Run `deploy-to-production` (`workflow_dispatch`) against that tag with
    `delivery=ota` or `delivery=binary`, and optional `submit_to_stores`.
-3. Use GitHub Environment `production` (configure required reviewers in repo
+3. Use GitHub Environment `Production` (configure required reviewers in repo
    settings).
 4. On success, the workflow merges the tagged commit into `master` for
    bookkeeping.
@@ -667,8 +697,9 @@ through `deploy-to-production`.
 
 ### GitHub Environment and repository secrets checklist
 
-Create Environments **`staging`** and **`production`**. Put the same secret
-names on each environment with environment-specific values:
+GitHub Environment names match workflow `environment:` keys (`Staging` /
+`Production`). Create Environments **`Staging`** and **`Production`**. Put the
+same secret names on each environment with environment-specific values:
 
 | Secret | Where | Purpose |
 |---|---|---|
@@ -677,22 +708,32 @@ names on each environment with environment-specific values:
 | `SUPABASE_DB_PASSWORD` | Environment | Database password for `supabase link` / `db push` |
 | `PHONE_HMAC_SECRET` | Environment | Edge Function secret (≥32 random bytes per environment) |
 | `DISPATCH_WORKER_SECRET` | Environment | Edge Function secret for `dispatch-notifications` (≥32 random bytes per environment) |
+| `EXPO_PUBLIC_SUPABASE_URL` | Environment | CI upsert into EAS (`Staging` → `preview`, `Production` → `production`) before delivery |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Environment | CI upsert into EAS before delivery |
+| `EXPO_PUBLIC_CAPTCHA_SITE_KEY` | Environment | CI upsert into EAS before delivery |
 | `EXPO_TOKEN` | Repository or shared secret used by EAS jobs | Expo personal access token for non-interactive `eas-cli@21.0.2` in CI |
 
-Do **not** put service-role keys, anon keys, or Twilio/CAPTCHA Auth dashboard
-secrets into these workflows. The Supabase deploy job upserts only
-`PHONE_HMAC_SECRET` and `DISPATCH_WORKER_SECRET` via
-`npx supabase secrets set --env-file` (file is never echoed). Migrations never
-use `--include-seed`. Functions deploy with `--use-api`.
+The three `EXPO_PUBLIC_*` names are public mobile configuration stored as
+GitHub Environment secrets so CI can sync them into EAS with
+`npx eas-cli@21.0.2 env:create --force` before delivery. Mapping:
+`Staging` → EAS `preview`, `Production` → EAS `production`. CI does not write
+local env files; developers keep using `mobile/.env.local`.
+
+Do **not** put service-role keys or Twilio/CAPTCHA Auth dashboard secrets into
+these workflows. The Supabase deploy job upserts only `PHONE_HMAC_SECRET` and
+`DISPATCH_WORKER_SECRET` via `npx supabase secrets set --env-file` (file is
+never echoed). Migrations never use `--include-seed`. Functions deploy with
+`--use-api`.
 
 ### Outside GitHub (manual, one-time)
 
-These are not GitHub secrets but must exist before EAS CI is useful:
+These are not GitHub secrets but must exist before EAS CI is useful. The three
+`EXPO_PUBLIC_*` mobile values are GitHub Environment secrets (above); CI
+upserts them into EAS before delivery rather than requiring a separate
+manual-only Expo dashboard inventory.
 
 - `npx eas-cli@21.0.2 init` from `mobile/` and commit `extra.eas.projectId`
   (do not invent a UUID; use the ID returned by Expo);
-- EAS environment variables for `preview` and `production` (see
-  [Configure EAS environment values](#4-configure-eas-environment-values));
 - EAS iOS/Android signing and push credentials (`eas credentials`);
 - App Store Connect / Google Play submission keys when using
   `submit_to_stores`.

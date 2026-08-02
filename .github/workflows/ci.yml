@@ -307,7 +307,7 @@ jobs:
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       TAG: ${{ needs.tag-preview.outputs.tag }}
-      DELIVERY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.delivery || 'ota' }}
+      DELIVERY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.delivery || vars.UPDATE_DELIVERY_METHOD || 'binary' }}
       # Repo variable; unset/empty falls back to android (ios | android | all).
       EAS_BUILD_PLATFORM: ${{ vars.EAS_BUILD_PLATFORM || 'android' }}
     steps:

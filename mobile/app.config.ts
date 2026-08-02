@@ -36,7 +36,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: identity.name,
   slug: 'sunsight',
-  version: '1.0.2',
+  version: '1.0.7',
   runtimeVersion: {
     policy: 'fingerprint',
   },
@@ -48,7 +48,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   userInterfaceStyle: 'automatic',
   ios: {
     ...config.ios,
-    icon: './assets/expo.icon',
+    // Liquid Glass `./assets/expo.icon` still crashes actool on Xcode 26.6; PNG unblocks builds.
+    icon: './assets/expo.icon/Assets/sunset.png',
     bundleIdentifier: identity.iosBundleIdentifier,
   },
   android: {

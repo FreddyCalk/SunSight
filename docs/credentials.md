@@ -56,7 +56,10 @@ The current mobile client reads the exact name
 
 1. Open **Project Settings > API Keys**.
 2. Copy the legacy `anon` key used by the current mobile integration.
-3. Put it in the matching EAS environment and local mobile environment.
+3. Put it on the matching GitHub Environment (`Staging` or `Production`) as
+   `EXPO_PUBLIC_SUPABASE_ANON_KEY`. CI upserts it into the matching EAS
+   environment before delivery. For local work, put it in
+   `mobile/.env.local`.
 
 The anon key is intended for public clients. It does not make database access
 safe by itself; every exposed table still requires least-privilege grants and
@@ -117,8 +120,8 @@ is suspected.
 
 Use only for operations that connect to hosted Postgres, including linking or
 pushing migrations when the CLI requests it. Store the password as
-`SUPABASE_DB_PASSWORD` on each GitHub Environment (`staging` and
-`production`) with that environment's value. Do not use separate
+`SUPABASE_DB_PASSWORD` on each GitHub Environment (`Staging` and
+`Production`) with that environment's value. Do not use separate
 `STAGING_DB_PASSWORD` / `PRODUCTION_DB_PASSWORD` secret names — CI reads
 `SUPABASE_DB_PASSWORD` only.
 
@@ -269,8 +272,9 @@ For each hosted Supabase project:
 3. Open the Supabase Dashboard Auth CAPTCHA settings.
 4. Enable the selected provider and enter its secret key.
 5. Configure the mobile environment with only the site/public key as
-   `EXPO_PUBLIC_CAPTCHA_SITE_KEY` (EAS `preview` / `production`, or
-   `mobile/.env.local` for local).
+   `EXPO_PUBLIC_CAPTCHA_SITE_KEY` on the matching GitHub Environment
+   (`Staging` → EAS `preview`, `Production` → EAS `production`). Local
+   work uses `mobile/.env.local`.
 6. Verify that a missing, expired, invalid, or replayed token prevents the OTP
    SMS from being sent.
 7. Verify that a resend requires both the cooldown and a fresh challenge token.
@@ -336,40 +340,57 @@ do.
 
 ### EAS mobile environment variables
 
-Create these for each EAS environment (`preview` and `production`) after the
-EAS project exists:
+Store these as GitHub Environment secrets on **`Staging`** and
+**`Production`**. CI upserts them into the matching EAS environment before
+delivery (`Staging` → EAS `preview`, `Production` → EAS `production`) with
+`npx eas-cli@21.0.2 env:create --force` and `plaintext` visibility:
 
 - `EXPO_PUBLIC_SUPABASE_URL`
 - `EXPO_PUBLIC_SUPABASE_ANON_KEY`
-- `EXPO_PUBLIC_CAPTCHA_SITE_KEY` when the mobile CAPTCHA challenge is used
+- `EXPO_PUBLIC_CAPTCHA_SITE_KEY`
+
+CI does not write local files. Local development continues to use
+`mobile/.env.local` (or optionally `eas env:pull` for an interactive
+machine). Do not rely on CI to populate a developer workstation.
+
+For a one-off interactive bootstrap or inspection after the EAS project
+exists:
 
 ```sh
-npx eas-cli@21.0.2 env:create \
+npx eas-cli@21.0.2 env:create --force \
   --environment preview \
   --name EXPO_PUBLIC_SUPABASE_URL \
   --value 'https://<staging-project-ref>.supabase.co' \
   --visibility plaintext
 
-npx eas-cli@21.0.2 env:create \
+npx eas-cli@21.0.2 env:create --force \
   --environment preview \
   --name EXPO_PUBLIC_SUPABASE_ANON_KEY \
   --value '<staging-anon-key>' \
   --visibility plaintext
 
-npx eas-cli@21.0.2 env:create \
+npx eas-cli@21.0.2 env:create --force \
   --environment preview \
   --name EXPO_PUBLIC_CAPTCHA_SITE_KEY \
   --value '<staging-captcha-site-key>' \
   --visibility plaintext
 ```
 
-Repeat with production values and `--environment production`. Inspect names
-and visibility with:
+Repeat with production values and `--environment production`. After a CI run
+that syncs EAS env, operators inspect names and visibility the same way:
 
 ```sh
 npx eas-cli@21.0.2 env:list --environment preview
 npx eas-cli@21.0.2 env:list --environment production
 ```
+
+Updating GitHub Environment secrets alone does not change already-shipped
+binaries or OTAs. New values reach clients only on the next EAS delivery that
+runs the sync step. If CI sync is reverted, EAS keeps the last successful
+upsert; to correct a bad upsert, restore GitHub secrets and re-run the EAS
+job, or manually `npx eas-cli@21.0.2 env:create --force` with prior values.
+See [deployment.md](deployment.md#4-configure-eas-environment-values) and
+[Rollback → EAS environment sync](deployment.md#eas-environment-sync).
 
 These values are intentionally public, but they must still point to the correct
 environment. Never create an `EXPO_PUBLIC_` variable for a secret key, service
@@ -380,20 +401,22 @@ role, database password, Twilio token, contact HMAC key, or store credential.
 Manual setup in the GitHub repository (Settings > Environments and Secrets).
 Branch and workflow behavior is documented in
 [deployment.md](deployment.md#branch-model-and-release-flow).
+GitHub Environment names match workflow `environment:` keys (`Staging` /
+`Production`).
 
 ### Environments to create
 
 | Environment | Used by | Notes |
 |---|---|---|
-| `staging` | Auto-deploy on push to `preview` | Optional protection rules; no production reviewers required |
-| `production` | Tag + `deploy-to-production` | Configure required reviewers before enabling production deploys |
+| `Staging` | Auto-deploy on push to `preview` | Optional protection rules; no production reviewers required |
+| `Production` | Tag + `deploy-to-production` | Configure required reviewers before enabling production deploys |
 
 `master` is the default/bookkeeping branch and does not auto-deploy. Do not
 point staging auto-deploy at `master`.
 
 ### Secrets on each GitHub Environment
 
-Put environment-specific values on **`staging`** and **`production`**:
+Put environment-specific values on **`Staging`** and **`Production`**:
 
 | Secret | Required for |
 |---|---|
@@ -402,9 +425,17 @@ Put environment-specific values on **`staging`** and **`production`**:
 | `SUPABASE_DB_PASSWORD` | `supabase link` / `db push` |
 | `PHONE_HMAC_SECRET` | Edge secret upsert (≥32 random bytes) |
 | `DISPATCH_WORKER_SECRET` | Edge secret upsert (≥32 random bytes) |
+| `EXPO_PUBLIC_SUPABASE_URL` | CI upsert into EAS (`Staging` → `preview`, `Production` → `production`) before delivery |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | CI upsert into EAS before delivery |
+| `EXPO_PUBLIC_CAPTCHA_SITE_KEY` | CI upsert into EAS before delivery |
 
 Optional: one repository-level `SUPABASE_ACCESS_TOKEN` if both projects share
 the same Supabase account and token scope is acceptable.
+
+The three `EXPO_PUBLIC_*` names are public mobile configuration. They still
+live as GitHub Environment secrets so CI can sync environment-specific values
+into EAS with `npx eas-cli@21.0.2 env:create --force` before preview or
+production delivery. They are not stored only in the Expo dashboard.
 
 ### Repository secret for EAS CI
 
@@ -415,13 +446,11 @@ the same Supabase account and token scope is acceptable.
 ### Outside GitHub (not repository secrets)
 
 Complete these before the first useful EAS CI run. Do not invent UUIDs or
-paste placeholder project IDs.
+paste placeholder project IDs. The three `EXPO_PUBLIC_*` mobile values are
+GitHub Environment secrets (above), not manual-only Expo dashboard entries.
 
 - Expo: `npx eas-cli@21.0.2 init` from `mobile/`; commit the returned
   `extra.eas.projectId`.
-- EAS env vars for `preview` and `production`:
-  `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, and
-  `EXPO_PUBLIC_CAPTCHA_SITE_KEY` when used.
 - EAS credentials: iOS distribution/provisioning/APNs; Android keystore;
   FCM V1 service-account key.
 - Store submit path only: App Store Connect API key and Google Play
@@ -451,9 +480,13 @@ Local development uses three ignored files with separate responsibilities:
 
 For staging and production, configure each environment independently:
 
-- mobile/EAS plaintext (`preview` ↔ staging, `production` ↔ production):
-  `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`, and
-  `EXPO_PUBLIC_CAPTCHA_SITE_KEY` when used;
+- GitHub Environment secrets (`Staging` / `Production`), including mobile public
+  config that CI syncs to EAS: `SUPABASE_ACCESS_TOKEN`,
+  `SUPABASE_PROJECT_ID`, `SUPABASE_DB_PASSWORD`, `PHONE_HMAC_SECRET`,
+  `DISPATCH_WORKER_SECRET`, `EXPO_PUBLIC_SUPABASE_URL`,
+  `EXPO_PUBLIC_SUPABASE_ANON_KEY`, `EXPO_PUBLIC_CAPTCHA_SITE_KEY`;
+- EAS plaintext after CI upsert (`preview` ↔ staging, `production` ↔
+  production): the same three `EXPO_PUBLIC_*` names;
 - Supabase Edge Function secrets: `PHONE_HMAC_SECRET`,
   `DISPATCH_WORKER_SECRET`;
 - Supabase Vault: `PHONE_HMAC_SECRET`, with the same versioned value as the
@@ -463,10 +496,10 @@ For staging and production, configure each environment independently:
   `sunsight-preview://` on staging and `sunsight://` on production;
 - EAS-managed push credentials: Apple APNs key for iOS and Firebase FCM V1
   service-account key for Android;
-- GitHub Environment secrets (staging/production): `SUPABASE_ACCESS_TOKEN`,
-  `SUPABASE_PROJECT_ID`, `SUPABASE_DB_PASSWORD`, `PHONE_HMAC_SECRET`,
-  `DISPATCH_WORKER_SECRET`;
 - GitHub repository secret for EAS CI: `EXPO_TOKEN`.
+
+Local remains `mobile/.env.local` (or optional `eas env:pull`). CI upserts
+EAS only; it does not write local env files.
 
 Only the `EXPO_PUBLIC_*` mobile values and project identifiers are
 client-safe. An anon key is public configuration constrained by RLS, not an

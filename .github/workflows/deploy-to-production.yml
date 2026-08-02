@@ -257,8 +257,8 @@ jobs:
           npx supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" --env-file "$ENV_FILE"
       - name: Deploy Edge Functions
         run: >
-          npx supabase functions deploy
-          --project-ref "$SUPABASE_PROJECT_ID"
+          npx supabase functions deploy \
+          --project-ref "$SUPABASE_PROJECT_ID" \
           --use-api \
           --import-map supabase/functions/deno.json
       - name: Hosted database advisors (blocking)
@@ -276,6 +276,8 @@ jobs:
     environment: Production
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
       TAG: ${{ needs.resolve-tag.outputs.tag }}
       DELIVERY: ${{ github.event.inputs.delivery }}
       SUBMIT: ${{ github.event.inputs.submit_to_stores }}
@@ -302,6 +304,28 @@ jobs:
             echo "EXPO_TOKEN secret is required for EAS production delivery" >&2
             exit 1
           fi
+      - name: Upsert EXPO_PUBLIC_* into EAS (production)
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          for NAME in \
+            EXPO_PUBLIC_SUPABASE_URL \
+            EXPO_PUBLIC_SUPABASE_ANON_KEY \
+            EXPO_PUBLIC_CAPTCHA_SITE_KEY
+          do
+            VALUE="${!NAME}"
+            if [[ -z "${VALUE}" ]]; then
+              echo "${NAME} secret is required for EAS production delivery" >&2
+              exit 1
+            fi
+            npx eas-cli@21.0.2 env:create \
+              --environment production \
+              --name "$NAME" \
+              --value "$VALUE" \
+              --visibility plaintext \
+              --force \
+              --non-interactive
+          done
       - name: Reject submit without binary delivery
         run: |
           set -euo pipefail

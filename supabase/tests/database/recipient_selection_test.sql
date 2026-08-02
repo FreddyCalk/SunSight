@@ -36,7 +36,7 @@ select is(
     from public.app_config
   ),
   jsonb_build_object(
-    'proximity_radius_m', 1609,
+    'proximity_radius_m', 32180,
     'location_ttl_seconds', 14400,
     'max_location_accuracy_m', 500,
     'blast_cooldown_seconds', 1800,
@@ -206,7 +206,7 @@ values
     'a0000000-0000-0000-0000-000000000002',
     extensions.st_project(
       extensions.st_geogfromtext('SRID=4326;POINT(0 0)'),
-      1608,
+      32179,
       pg_catalog.radians(90)
     ),
     20,
@@ -218,7 +218,7 @@ values
     'a0000000-0000-0000-0000-000000000003',
     extensions.st_project(
       extensions.st_geogfromtext('SRID=4326;POINT(0 0)'),
-      1610,
+      32181,
       pg_catalog.radians(90)
     ),
     20,
@@ -365,7 +365,7 @@ select ok(
     where blast_id = 'c0000000-0000-0000-0000-000000000001'
       and recipient_id = 'a0000000-0000-0000-0000-000000000002'
   ),
-  'a contact 1608 meters away is inside the boundary'
+  'a contact 32179 meters away is inside the boundary'
 );
 
 select ok(
@@ -375,7 +375,7 @@ select ok(
     where blast_id = 'c0000000-0000-0000-0000-000000000001'
       and recipient_id = 'a0000000-0000-0000-0000-000000000003'
   ),
-  'a contact 1610 meters away is outside the boundary'
+  'a contact 32181 meters away is outside the boundary'
 );
 
 select ok(

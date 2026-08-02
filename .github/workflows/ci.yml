@@ -306,11 +306,8 @@ jobs:
     environment: Staging
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-<<<<<<< Updated upstream
-=======
       EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
       EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
->>>>>>> Stashed changes
       TAG: ${{ needs.tag-preview.outputs.tag }}
       DELIVERY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.delivery || vars.UPDATE_DELIVERY_METHOD || 'binary' }}
       # Repo variable; unset/empty falls back to android (ios | android | all).
@@ -334,6 +331,28 @@ jobs:
             echo "EXPO_TOKEN secret is required for EAS preview delivery" >&2
             exit 1
           fi
+      - name: Upsert EXPO_PUBLIC_* into EAS (preview)
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          for NAME in \
+            EXPO_PUBLIC_SUPABASE_URL \
+            EXPO_PUBLIC_SUPABASE_ANON_KEY \
+            EXPO_PUBLIC_CAPTCHA_SITE_KEY
+          do
+            VALUE="${!NAME}"
+            if [[ -z "${VALUE}" ]]; then
+              echo "${NAME} secret is required for EAS preview delivery" >&2
+              exit 1
+            fi
+            npx eas-cli@21.0.2 env:create \
+              --environment preview \
+              --name "$NAME" \
+              --value "$VALUE" \
+              --visibility plaintext \
+              --force \
+              --non-interactive
+          done
       - name: Deliver via EAS (OTA or binary)
         working-directory: mobile
         run: |
@@ -351,7 +370,8 @@ jobs:
               npx eas-cli@21.0.2 build \
                 --profile preview \
                 --platform "$EAS_BUILD_PLATFORM" \
-                --non-interactive
+                --non-interactive \
+                --no-wait
               ;;
             *)
               echo "Unknown delivery mode: ${DELIVERY}" >&2

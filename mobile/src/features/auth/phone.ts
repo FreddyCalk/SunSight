@@ -1,4 +1,4 @@
-import { parsePhoneNumberFromString } from 'libphonenumber-js';
+import { AsYouType, parsePhoneNumberFromString } from 'libphonenumber-js';
 
 /** Matches backend Edge / database +1 NANP contract. */
 export const E164_PLUS_ONE_PATTERN = /^\+1[2-9]\d{9}$/;
@@ -36,4 +36,30 @@ export function normalizeUsCanadaE164(input: string): string | null {
 
 export function isUsCanadaE164(value: string): boolean {
   return E164_PLUS_ONE_PATTERN.test(value);
+}
+
+/**
+ * Progressive national formatting for US/Canada phone input fields.
+ * Strips to digits, drops a leading country `1` when length exceeds 10
+ * digits, caps at 10 national digits, then formats as-you-type for `US`.
+ */
+export function formatUsCanadaNationalInput(raw: string): string {
+  let digits = raw.replace(/\D/g, '');
+  if (digits.startsWith('1') && digits.length > 10) {
+    digits = digits.slice(1);
+  }
+  const nationalDigits = digits.slice(0, 10);
+  return new AsYouType('US').input(nationalDigits);
+}
+
+/**
+ * National display form of an E.164 number for OTP hint UI.
+ * Returns the original string when parsing fails.
+ */
+export function formatUsCanadaNationalDisplay(e164: string): string {
+  const parsed = parsePhoneNumberFromString(e164);
+  if (!parsed) {
+    return e164;
+  }
+  return parsed.format('NATIONAL');
 }

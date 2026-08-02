@@ -36,7 +36,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: identity.name,
   slug: 'sunsight',
-  version: '1.0.10',
+  version: '1.0.11',
   runtimeVersion: {
     policy: 'fingerprint',
   },

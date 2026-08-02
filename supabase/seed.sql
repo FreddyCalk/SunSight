@@ -1,6 +1,6 @@
 insert into public.app_config (config_key, value_json, description)
 values
-  ('proximity_radius_m', '1609'::jsonb, 'Recipient proximity radius in meters'),
+  ('proximity_radius_m', '32180'::jsonb, 'Recipient proximity radius in meters'),
   ('location_ttl_seconds', '14400'::jsonb, 'Maximum location snapshot age'),
   ('max_location_accuracy_m', '500'::jsonb, 'Maximum accepted location accuracy'),
   ('blast_cooldown_seconds', '1800'::jsonb, 'Shared sender cooldown across blast kinds'),

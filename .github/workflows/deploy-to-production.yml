@@ -259,7 +259,8 @@ jobs:
         run: >
           npx supabase functions deploy
           --project-ref "$SUPABASE_PROJECT_ID"
-          --use-api
+          --use-api \
+          --import-map supabase/functions/deno.json
       - name: Hosted database advisors (blocking)
         run: >
           npx supabase db advisors

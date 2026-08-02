@@ -48,7 +48,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   userInterfaceStyle: 'automatic',
   ios: {
     ...config.ios,
-    icon: './assets/expo.icon',
+    icon: './assets/expo.icon/Assets/sunset.png',
     bundleIdentifier: identity.iosBundleIdentifier,
   },
   android: {

@@ -337,8 +337,7 @@ jobs:
           set -euo pipefail
           for NAME in \
             EXPO_PUBLIC_SUPABASE_URL \
-            EXPO_PUBLIC_SUPABASE_ANON_KEY \
-            EXPO_PUBLIC_CAPTCHA_SITE_KEY
+            EXPO_PUBLIC_SUPABASE_ANON_KEY
           do
             VALUE="${!NAME}"
             if [[ -z "${VALUE}" ]]; then

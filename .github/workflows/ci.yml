@@ -307,6 +307,8 @@ jobs:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       TAG: ${{ needs.tag-preview.outputs.tag }}
       DELIVERY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.delivery || 'ota' }}
+      # Repo variable; unset/empty falls back to android (ios | android | all).
+      EAS_BUILD_PLATFORM: ${{ vars.EAS_BUILD_PLATFORM || 'android' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -339,9 +341,10 @@ jobs:
                 --message "$TAG"
               ;;
             binary)
+              echo "EAS binary platform: ${EAS_BUILD_PLATFORM}"
               npx eas-cli@21.0.2 build \
                 --profile preview \
-                --platform all \
+                --platform "$EAS_BUILD_PLATFORM" \
                 --non-interactive
               ;;
             *)

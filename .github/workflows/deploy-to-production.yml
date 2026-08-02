@@ -278,6 +278,8 @@ jobs:
       TAG: ${{ needs.resolve-tag.outputs.tag }}
       DELIVERY: ${{ github.event.inputs.delivery }}
       SUBMIT: ${{ github.event.inputs.submit_to_stores }}
+      # Repo variable; unset/empty falls back to android (ios | android | all).
+      EAS_BUILD_PLATFORM: ${{ vars.EAS_BUILD_PLATFORM || 'android' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4.2.2
@@ -320,9 +322,10 @@ jobs:
                 --message "$TAG"
               ;;
             binary)
+              echo "EAS binary platform: ${EAS_BUILD_PLATFORM}"
               BUILD_JSON="$(npx eas-cli@21.0.2 build \
                 --profile production \
-                --platform all \
+                --platform "$EAS_BUILD_PLATFORM" \
                 --non-interactive \
                 --json)"
               printf '%s\n' "$BUILD_JSON" > /tmp/eas-builds.json

@@ -346,7 +346,8 @@ jobs:
               npx eas-cli@21.0.2 build \
                 --profile preview \
                 --platform "$EAS_BUILD_PLATFORM" \
-                --non-interactive
+                --non-interactive \
+                --no-wait
               ;;
             *)
               echo "Unknown delivery mode: ${DELIVERY}" >&2

@@ -1,0 +1,65 @@
+# Sync preview and local from master when master has unique commits.
+# Prefer fast-forward; fall back to merge. Never force-reset.
+# A preview push may trigger staging CI (ci.yml). Normal production
+# bookkeeping leaves master as an ancestor of preview/local → no-op.
+
+name: Sync from master
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-from-master
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync preview and local
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Fast-forward or merge master into preview and local
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin master preview local
+
+          sync_branch() {
+            local branch="$1"
+            if git merge-base --is-ancestor origin/master "origin/${branch}"; then
+              echo "Skip ${branch}: already contains origin/master"
+              return 0
+            fi
+
+            echo "Syncing ${branch} with origin/master"
+            git checkout -B "${branch}" "origin/${branch}"
+
+            if git merge --ff-only origin/master; then
+              echo "${branch} fast-forwarded to origin/master"
+            else
+              if ! git merge --no-ff origin/master \
+                -m "chore: sync master into ${branch}"; then
+                echo "Merge conflict syncing master into ${branch}; resolve manually" >&2
+                git merge --abort 2>/dev/null || true
+                exit 1
+              fi
+              echo "Created merge commit of origin/master into ${branch}"
+            fi
+
+            git push origin "HEAD:${branch}"
+            echo "Pushed ${branch}"
+          }
+
+          sync_branch preview
+          sync_branch local

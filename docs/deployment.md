@@ -394,6 +394,13 @@ Sunsight uses three long-lived git branches. The default bookkeeping branch is
    is never triggered by a push to `master` or `preview`.
 6. After production succeeds, `deploy-to-production` merges the **tagged**
    commit into `master` for bookkeeping (not the post-bump `preview` tip).
+7. When a push to `master` introduces commits that are **not** already on
+   `preview` or `local`, the `sync-from-master` workflow fast-forwards each
+   branch (or creates a merge commit if they have diverged). If `master` is
+   already an ancestor of the branch tip (typical after production
+   bookkeeping, when preview still has the post-deploy version bump), the
+   sync is a no-op. Conflicts fail the job and require manual resolution. A
+   successful sync push to `preview` can trigger staging auto-deploy.
 
 ### Production tags
 
@@ -637,7 +644,9 @@ checked out on `preview`):
    commit to `local`, and fast-forward `preview`.
 
 `master` is bookkeeping only. Pushing to `master` does **not** auto-deploy
-staging or production.
+staging or production by itself. The `sync-from-master` workflow may still
+fast-forward or merge unique `master` commits into `preview` and `local`; a
+resulting push to `preview` can then trigger this staging path.
 
 ### Production deploy (tag + `deploy-to-production`)
 
@@ -699,7 +708,9 @@ create release tags on preview deploy, need write access beyond the default
 - permission to push commits to `local` and to fast-forward `preview`;
 - permission to create annotated tags `vX.Y.Z` on preview deploy;
 - permission to merge or push bookkeeping updates to `master` from
-  `deploy-to-production`.
+  `deploy-to-production`;
+- permission for `sync-from-master` to fast-forward or merge `master` into
+  `preview` and `local` (never force-reset).
 
 Use a fine-scoped GitHub App or `GITHUB_TOKEN` with the minimum contents write
 needed for those branches and tags. Do not grant broader org admin tokens.

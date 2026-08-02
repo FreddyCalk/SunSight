@@ -283,9 +283,10 @@ jobs:
           npx supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" --env-file "$ENV_FILE"
       - name: Deploy Edge Functions
         run: >
-          npx supabase functions deploy
-          --project-ref "$SUPABASE_PROJECT_ID"
-          --use-api
+          npx supabase functions deploy \
+            --project-ref "$SUPABASE_PROJECT_ID" \
+            --use-api \
+            --import-map supabase/functions/deno.json
       - name: Hosted database advisors (blocking)
         run: >
           npx supabase db advisors
